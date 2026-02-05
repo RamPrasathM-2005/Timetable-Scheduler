@@ -1,0 +1,3000 @@
+import React, { useState, useEffect } from "react";
+import axios from "axios";
+import { toast, ToastContainer } from "react-toastify";
+import "react-toastify/dist/ReactToastify.css";
+
+const API_BASE_URL = "http://localhost:4000";
+
+export default function AdminAttendanceGenerator() {
+  // State variables
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
+  const [timetable, setTimetable] = useState({});
+  const [students, setStudents] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+  const [selectedCourse, setSelectedCourse] = useState(null);
+  const [userProfile, setUserProfile] = useState(null);
+  const [degrees, setDegrees] = useState([]);
+  const [batches, setBatches] = useState([]);
+  const [departments, setDepartments] = useState([]);
+  const [semesters, setSemesters] = useState([]);
+  const [selectedDegree, setSelectedDegree] = useState("");
+  const [selectedBatch, setSelectedBatch] = useState("");
+  const [selectedDepartment, setSelectedDepartment] = useState("");
+  const [selectedSemester, setSelectedSemester] = useState("");
+  const [bulkStatus, setBulkStatus] = useState("");
+
+  // Set authentication token and default dates
+  useEffect(() => {
+    const token = localStorage.getItem("token");
+    if (token) {
+      axios.defaults.headers.common["Authorization"] = `Bearer ${token}`;
+    } else {
+      setError("No authentication token found. Please log in.");
+    }
+
+    if (!fromDate) {
+      const today = new Date();
+      const formattedToday = today.toISOString().split("T")[0];
+      setFromDate(formattedToday);
+
+      const nextWeek = new Date(today);
+      nextWeek.setDate(today.getDate() + 6);
+      setToDate(nextWeek.toISOString().split("T")[0]);
+    }
+
+    try {
+      const userData = JSON.parse(localStorage.getItem("user") || "{}");
+      setUserProfile(userData);
+    } catch (err) {
+      console.error("Failed to load user profile", err);
+      setError("Failed to load user profile");
+    }
+  }, [fromDate]);
+
+  // Fetch degrees and batches
+  useEffect(() => {
+    const fetchDegreesAndBatches = async () => {
+      try {
+        const response = await axios.get(
+          `${API_BASE_URL}/api/admin/timetable/batches`
+        );
+        console.log("Batches API response:", response.data);
+        if (
+          response.data?.status === "success" &&
+          Array.isArray(response.data.data)
+        ) {
+          const uniqueDegrees = [
+            ...new Set(response.data.data.map((batch) => batch.degree)),
+          ];
+          setDegrees(uniqueDegrees);
+          setBatches(response.data.data);
+          setError(null);
+        } else {
+          throw new Error("Invalid response structure: data is not an array");
+        }
+      } catch (error) {
+        console.error("Error fetching degrees and batches:", error);
+        setError(
+          error.response?.data?.message || "Failed to load degrees and batches."
+        );
+        setDegrees([]);
+        setBatches([]);
+      }
+    };
+    fetchDegreesAndBatches();
+  }, []);
+
+  // Fetch departments
+  useEffect(() => {
+    const fetchDepartments = async () => {
+      try {
+        const response = await axios.get(
+          `${API_BASE_URL}/api/admin/timetable/departments`
+        );
+        console.log("Departments API response:", response.data);
+        if (
+          response.data?.status === "success" &&
+          Array.isArray(response.data.data)
+        ) {
+          const mappedDepartments = response.data.data.map((dept) => ({
+            departmentId: dept.Deptid,
+            departmentCode: dept.deptCode,
+            departmentName: dept.Deptname,
+          }));
+          setDepartments(mappedDepartments);
+          setError(null);
+        } else {
+          throw new Error("Invalid response structure: data is not an array");
+        }
+      } catch (error) {
+        console.error("Error fetching departments:", error);
+        setError(
+          error.response?.data?.message || "Failed to load departments."
+        );
+        setDepartments([]);
+      }
+    };
+    fetchDepartments();
+  }, []);
+
+  // Fetch semesters based on degree, batch, and branch
+  useEffect(() => {
+    if (selectedDegree && selectedBatch && selectedDepartment) {
+      const fetchSemesters = async () => {
+        try {
+          const selectedBatchData = batches.find(
+            (batch) => batch.batchId === parseInt(selectedBatch)
+          );
+          if (!selectedBatchData) {
+            throw new Error("Selected batch not found");
+          }
+          const response = await axios.get(
+            `${API_BASE_URL}/api/admin/semesters/by-batch-branch`,
+            {
+              params: {
+                degree: selectedDegree,
+                batch: selectedBatchData.batch,
+                branch: selectedBatchData.branch,
+              },
+            }
+          );
+          console.log("Semesters API response:", response.data);
+          if (
+            response.data?.status === "success" &&
+            Array.isArray(response.data.data)
+          ) {
+            setSemesters(response.data.data);
+            setError(null);
+          } else {
+            throw new Error("Invalid response structure: data is not an array");
+          }
+        } catch (error) {
+          console.error("Error fetching semesters:", error);
+          setError(
+            error.response?.data?.message || "Failed to load semesters."
+          );
+          setSemesters([]);
+        }
+      };
+      fetchSemesters();
+    } else {
+      setSemesters([]);
+    }
+  }, [selectedDegree, selectedBatch, selectedDepartment, batches]);
+
+  // Helper function to generate array of dates between fromDate and toDate
+  const generateDates = () => {
+    if (!fromDate || !toDate) return [];
+    const dates = [];
+    let currentDate = new Date(fromDate);
+    const endDate = new Date(toDate);
+
+    endDate.setDate(endDate.getDate() + 1);
+    while (currentDate < endDate) {
+      dates.push(currentDate.toISOString().split("T")[0]);
+      currentDate.setDate(currentDate.getDate() + 1);
+    }
+    return dates;
+  };
+
+  // Helper function to generate time slots for periods
+  const generateTimeSlots = () => {
+    const slots = [
+      { periodNumber: 1, time: "9:00–10:00" },
+      { periodNumber: 2, time: "10:00–11:00" },
+      { periodNumber: 3, time: "11:00–12:00" },
+      { periodNumber: 4, time: "12:00–1:00" },
+      { periodNumber: 5, time: "1:30–2:30" },
+      { periodNumber: 6, time: "2:30–3:30" },
+      { periodNumber: 7, time: "3:30–4:30" },
+      { periodNumber: 8, time: "4:30–5:30" },
+    ];
+    return slots;
+  };
+
+  // Fetch timetable data from API
+  const handleGenerate = async () => {
+    setError(null);
+    setSelectedCourse(null);
+    setStudents([]);
+    setTimetable({}); // Clear previous timetable
+
+    if (!fromDate || !toDate) {
+      setError("Please select both dates");
+      toast.error("Please select both dates", { position: "top-right" });
+      return;
+    }
+    if (
+      !selectedDegree ||
+      !selectedBatch ||
+      !selectedDepartment ||
+      !selectedSemester
+    ) {
+      setError("Please select degree, batch, department, and semester");
+      toast.error("Please select degree, batch, department, and semester", {
+        position: "top-right",
+      });
+      return;
+    }
+    if (new Date(fromDate) > new Date(toDate)) {
+      setError("From date must be before or equal to to date");
+      toast.error("From date must be before or equal to to date", {
+        position: "top-right",
+      });
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const selectedBatchData = batches.find(
+        (batch) => batch.batchId === parseInt(selectedBatch)
+      );
+      if (!selectedBatchData) {
+        throw new Error("Selected batch not found");
+      }
+      const res = await axios.get(
+        `${API_BASE_URL}/api/admin/attendance/timetable`,
+        {
+          headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+          params: {
+            startDate: fromDate,
+            endDate: toDate,
+            degree: selectedDegree,
+            batch: selectedBatchData.batch,
+            branch: selectedBatchData.branch,
+            Deptid: selectedDepartment,
+            semesterId: selectedSemester,
+          },
+        }
+      );
+      console.log("Timetable Response:", res.data);
+      if (!res.data.data?.timetable) {
+        setError("No timetable data received for the selected filters.");
+        toast.error("No timetable data received for the selected filters.", {
+          position: "top-right",
+        });
+      } else {
+        setTimetable(res.data.data.timetable);
+        toast.success("Timetable generated successfully!", {
+          position: "top-right",
+        });
+      }
+    } catch (err) {
+      console.error("API Error:", err.response?.data || err);
+      const errorMessage = err.response?.data?.message || err.message;
+      setError(`Error generating timetable: ${errorMessage}`);
+      toast.error(`Error generating timetable: ${errorMessage}`, {
+        position: "top-right",
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Handle when user clicks on a course in the timetable
+  const handleCourseClick = async (
+    courseId,
+    sectionId,
+    date,
+    periodNumber,
+    courseTitle
+  ) => {
+    setError(null);
+    setStudents([]);
+    setSelectedCourse(null);
+    setBulkStatus(""); // Reset bulk status dropdown
+
+    if (!courseId) {
+      setError("Invalid course ID selected.");
+      toast.error("Invalid course ID selected.", { position: "top-right" });
+      return;
+    }
+
+    const safeSectionId = "all";
+
+    try {
+      const dayOfWeek = new Date(date)
+        .toLocaleDateString("en-US", { weekday: "short" })
+        .toUpperCase();
+
+      console.log("Calling getStudentsForPeriod with:", {
+        courseId,
+        sectionId: safeSectionId,
+        dayOfWeek,
+        periodNumber,
+        date,
+      });
+
+      const res = await axios.get(
+        `${API_BASE_URL}/api/admin/attendance/students/${courseId}/${safeSectionId}/${dayOfWeek}/${periodNumber}`,
+        {
+          headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+          params: { date },
+        }
+      );
+
+      console.log("Students Response:", res.data);
+
+      if (!res.data.data) {
+        setError("No student data received.");
+        toast.error("No student data received.", { position: "top-right" });
+      } else {
+        // FIXED: Do not override fetched status; use the status from DB (COALESCE(pa.status, '') in backend)
+        const updatedStudents = res.data.data.map((student) => ({
+          ...student,
+          // status is already fetched from backend; no need to set to ""
+        }));
+        setStudents(updatedStudents);
+        setSelectedCourse({
+          courseId,
+          courseTitle,
+          sectionId: safeSectionId,
+          date,
+          periodNumber,
+          dayOfWeek,
+        });
+        toast.success("Students loaded successfully!", {
+          position: "top-right",
+        });
+      }
+    } catch (err) {
+      console.error("Error in handleCourseClick:", err);
+      const errorMessage = err.response?.data?.message || err.message;
+      setError(`Error fetching students: ${errorMessage}`);
+      toast.error(`Error fetching students: ${errorMessage}`, {
+        position: "top-right",
+      });
+    }
+  };
+
+  // Update student attendance status
+  const handleAttendanceChange = (rollnumber, status) => {
+    setStudents((prev) =>
+      prev.map((student) =>
+        student.rollnumber === rollnumber ? { ...student, status } : student
+      )
+    );
+  };
+
+  // Handle bulk status change for all students
+  const handleBulkStatusChange = (status) => {
+    setBulkStatus(status);
+    if (status) {
+      setStudents((prev) =>
+        prev.map((student) => ({
+          ...student,
+          status,
+        }))
+      );
+      toast.success(
+        `All students marked as ${
+          status === "P" ? "Present" : status === "A" ? "Absent" : "On Duty"
+        }!`,
+        {
+          position: "top-right",
+        }
+      );
+    }
+  };
+
+  // Save attendance to the database
+  const handleSave = async () => {
+    if (!students.length) {
+      setError("No students to save.");
+      toast.error("No students to save.", { position: "top-right" });
+      return;
+    }
+
+    if (!selectedCourse) {
+      setError("Course data missing.");
+      toast.error("Course data missing.", { position: "top-right" });
+      return;
+    }
+
+    // Filter students with valid status
+    const validStatuses = ["P", "A", "OD"];
+    const payload = students
+      .filter((student) => validStatuses.includes(student.status))
+      .map((student) => ({
+        rollnumber: student.rollnumber,
+        name: student.name,
+        sectionName: student.sectionName || "N/A",
+        status: student.status,
+      }));
+
+    if (payload.length === 0) {
+      setError("No students with valid attendance status to save.");
+      toast.error("No students with valid attendance status to save.", {
+        position: "top-right",
+      });
+      return;
+    }
+
+    setSaving(true);
+    try {
+      console.log("Sending attendance payload:", {
+        courseId: selectedCourse.courseId,
+        courseTitle: selectedCourse.courseTitle,
+        sectionId: selectedCourse.sectionId,
+        dayOfWeek: selectedCourse.dayOfWeek,
+        periodNumber: selectedCourse.periodNumber,
+        date: selectedCourse.date,
+        attendances: payload,
+      });
+
+      const res = await axios.post(
+        `${API_BASE_URL}/api/admin/attendance/mark/${selectedCourse.courseId}/${selectedCourse.sectionId}/${selectedCourse.dayOfWeek}/${selectedCourse.periodNumber}`,
+        { date: selectedCourse.date, attendances: payload },
+        {
+          headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+        }
+      );
+
+      console.log("Save Attendance Response:", res.data);
+
+      if (res.data.status === "success") {
+        toast.success(res.data.message || "Attendance saved successfully!", {
+          position: "top-right",
+          autoClose: 3000,
+        });
+        setError(null);
+        // FIXED: Reload students after save to show updated statuses (or keep as-is since select will reflect on reload)
+        // For now, reset to "" only if you want to clear; but to show saved, reload via handleCourseClick
+        setStudents(
+          (prev) =>
+            prev.map((student) => ({ ...student, status: student.status })) // Keep the saved status
+        );
+        // Optionally reload to fetch fresh data:
+        // handleCourseClick(selectedCourse.courseId, selectedCourse.sectionId, selectedCourse.date, selectedCourse.periodNumber, selectedCourse.courseTitle);
+      } else {
+        throw new Error(res.data.message || "Save failed");
+      }
+    } catch (err) {
+      console.error("Error in handleSave:", err);
+      const errorMessage = err.response?.data?.message || err.message;
+      setError(`Error saving attendance: ${errorMessage}`);
+      toast.error(`Failed to save attendance: ${errorMessage}`, {
+        position: "top-right",
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Calculate attendance summary
+  const attendanceSummary = students.reduce(
+    (acc, student) => {
+      if (student.status === "P") acc.present += 1;
+      else if (student.status === "A") acc.absent += 1;
+      else if (student.status === "OD") acc.onDuty += 1;
+      return acc;
+    },
+    { present: 0, absent: 0, onDuty: 0 }
+  );
+
+  const dates = generateDates();
+  const timeSlots = generateTimeSlots();
+  const hasDatesSelected = fromDate && toDate && dates.length > 0;
+
+  return (
+    <div className="p-6 max-w-6xl mx-auto bg-gradient-to-br from-blue-50 to-blue-100 rounded-xl shadow-lg">
+      <h1 className="text-4xl font-bold mb-8 text-center text-blue-900">
+        Admin Attendance Management
+      </h1>
+
+      {error && (
+        <div className="mb-6 p-4 bg-red-100 border-l-4 border-red-500 text-red-800 rounded-lg shadow">
+          {error}
+          <button
+            onClick={() => setError(null)}
+            className="ml-4 px-3 py-1 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
+      <div className="flex flex-wrap gap-4 justify-center mb-8">
+        <div className="flex flex-col">
+          <label className="text-sm text-blue-700 mb-1">Degree</label>
+          <select
+            value={selectedDegree}
+            onChange={(e) => {
+              setSelectedDegree(e.target.value);
+              setSelectedBatch("");
+              setSelectedDepartment("");
+              setSelectedSemester("");
+              setError(null);
+            }}
+            className="border-2 border-blue-300 p-3 rounded-lg shadow-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+          >
+            <option value="">Select Degree</option>
+            {degrees.length > 0 ? (
+              degrees.map((degree) => (
+                <option key={degree} value={degree}>
+                  {degree}
+                </option>
+              ))
+            ) : (
+              <option value="" disabled>
+                No degrees available
+              </option>
+            )}
+          </select>
+        </div>
+
+        <div className="flex flex-col">
+          <label className="text-sm text-blue-700 mb-1">Batch</label>
+          <select
+            value={selectedBatch}
+            onChange={(e) => {
+              setSelectedBatch(e.target.value);
+              setSelectedDepartment("");
+              setSelectedSemester("");
+              setError(null);
+            }}
+            disabled={!selectedDegree}
+            className="border-2 border-blue-300 p-3 rounded-lg shadow-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:bg-blue-50"
+          >
+            <option value="">Select Batch</option>
+            {batches
+              .filter((batch) => batch.degree === selectedDegree)
+              .map((batch) => (
+                <option key={batch.batchId} value={batch.batchId}>
+                 {batch.batch}
+                </option>
+              ))}
+          </select>
+        </div>
+
+        <div className="flex flex-col">
+          <label className="text-sm text-blue-700 mb-1">Department</label>
+          <select
+            value={selectedDepartment}
+            onChange={(e) => {
+              setSelectedDepartment(e.target.value);
+              setSelectedSemester("");
+              setError(null);
+            }}
+            disabled={!selectedBatch}
+            className="border-2 border-blue-300 p-3 rounded-lg shadow-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:bg-blue-50"
+          >
+            <option value="">Select Department</option>
+            {departments
+              .filter((dept) =>
+                batches.some(
+                  (batch) =>
+                    batch.degree === selectedDegree &&
+                    batch.batchId === parseInt(selectedBatch) &&
+                    batch.branch.toUpperCase() ===
+                      dept.departmentCode.toUpperCase()
+                )
+              )
+              .map((dept) => (
+                <option key={dept.departmentId} value={dept.departmentId}>
+                  {dept.departmentName} ({dept.departmentCode})
+                </option>
+              ))}
+          </select>
+        </div>
+
+        <div className="flex flex-col">
+          <label className="text-sm text-blue-700 mb-1">Semester</label>
+          <select
+            value={selectedSemester}
+            onChange={(e) => {
+              setSelectedSemester(e.target.value);
+              setError(null);
+            }}
+            disabled={!selectedDepartment}
+            className="border-2 border-blue-300 p-3 rounded-lg shadow-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:bg-blue-50"
+          >
+            <option value="">Select Semester</option>
+            {semesters.length > 0 ? (
+              semesters.map((sem) => (
+                <option key={sem.semesterId} value={sem.semesterId}>
+                  Semester {sem.semesterNumber}
+                </option>
+              ))
+            ) : (
+              <option value="" disabled>
+                No semesters available
+              </option>
+            )}
+          </select>
+        </div>
+
+        <div className="flex flex-col">
+          <label className="text-sm text-blue-700 mb-1">From Date</label>
+          <input
+            type="date"
+            className="border-2 border-blue-300 p-3 rounded-lg shadow-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            value={fromDate}
+            onChange={(e) => setFromDate(e.target.value)}
+          />
+        </div>
+
+        <div className="flex flex-col">
+          <label className="text-sm text-blue-700 mb-1">To Date</label>
+          <input
+            type="date"
+            className="border-2 border-blue-300 p-3 rounded-lg shadow-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            value={toDate}
+            onChange={(e) => setToDate(e.target.value)}
+            min={fromDate}
+          />
+        </div>
+
+        <div className="flex items-end">
+          <button
+            onClick={handleGenerate}
+            disabled={loading}
+            className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg shadow-md disabled:opacity-50 transition-colors duration-200"
+          >
+            {loading ? (
+              <span className="flex items-center">
+                <svg
+                  className="animate-spin -ml-1 mr-2 h-4 w-4 text-white"
+                  xmlns="http://www.w3.org/2000/svg"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                >
+                  <circle
+                    className="opacity-25"
+                    cx="12"
+                    cy="12"
+                    r="10"
+                    stroke="currentColor"
+                    strokeWidth="4"
+                  ></circle>
+                  <path
+                    className="opacity-75"
+                    fill="currentColor"
+                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                  ></path>
+                </svg>
+                Generating...
+              </span>
+            ) : (
+              "View TimeTable"
+            )}
+          </button>
+        </div>
+      </div>
+
+      {hasDatesSelected && (
+        <div className="mb-8">
+          <h2 className="text-2xl font-semibold mb-4 text-blue-800">
+            Class Timetable
+            {userProfile && (
+              <span className="text-base font-normal ml-2 text-blue-600">
+                (Admin: {userProfile.username})
+              </span>
+            )}
+          </h2>
+
+          {Object.keys(timetable).length === 0 && !loading && (
+            <div className="text-center text-blue-500 italic">
+              No timetable data available for the selected filters.
+            </div>
+          )}
+
+          {Object.keys(timetable).length > 0 && (
+            <div className="overflow-x-auto rounded-lg shadow-md">
+              <table className="w-full border-collapse">
+                <thead className="bg-gradient-to-r from-blue-600 to-blue-800 text-white">
+                  <tr>
+                    <th className="border border-blue-300 p-3 text-left">
+                      Date
+                    </th>
+                    <th className="border border-blue-300 p-3 text-left">
+                      Day
+                    </th>
+                    {timeSlots.map(({ periodNumber, time }) => (
+                      <th
+                        key={periodNumber}
+                        className="border border-blue-300 p-3 text-center"
+                      >
+                        Period {periodNumber}
+                        <br />
+                        <span className="text-xs font-normal">{time}</span>
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {dates.map((date) => {
+                    const dayName = new Date(date).toLocaleDateString("en-US", {
+                      weekday: "long",
+                    });
+                    const periods = (timetable[date] || []).reduce((acc, p) => {
+                      acc[p.periodNumber] = p;
+                      return acc;
+                    }, {});
+
+                    return (
+                      <tr
+                        key={date}
+                        className="hover:bg-blue-50 transition-colors duration-150"
+                      >
+                        <td className="border border-blue-200 p-3 font-medium text-blue-900">
+                          {date}
+                        </td>
+                        <td className="border border-blue-200 p-3 text-blue-900">
+                          {dayName}
+                        </td>
+                        {timeSlots.map(({ periodNumber }) => {
+                          const period = periods[periodNumber];
+                          return (
+                            <td
+                              key={`${date}-${periodNumber}`}
+                              className={`border border-blue-200 p-3 text-center ${
+                                period ? "bg-blue-50" : "bg-blue-100"
+                              }`}
+                            >
+                              {period ? (
+                                <button
+                                  onClick={() =>
+                                    handleCourseClick(
+                                      period.courseId,
+                                      period.sectionId,
+                                      date,
+                                      period.periodNumber,
+                                      period.courseTitle
+                                    )
+                                  }
+                                  className="text-md font-semibold text-blue-700 hover:text-blue-900 hover:underline transition-colors duration-150 py-1 px-2 rounded"
+                                  disabled={!period.courseId}
+                                >
+                                  {period.courseTitle ||
+                                    `Course ${period.courseId}`}
+                                  <br />
+                                  <span className="text-xs font-normal">
+                                    Sec: {period.sectionName || "N/A"}
+                                  </span>
+                                </button>
+                              ) : (
+                                <span className="text-sm text-blue-400 italic">
+                                  No period
+                                </span>
+                              )}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {selectedCourse && (
+        <div className="mt-8 bg-white p-6 rounded-xl shadow-md">
+          <div className="flex justify-between items-center mb-6">
+            <h2 className="text-2xl font-semibold text-blue-800">
+              Attendance for {selectedCourse.courseTitle} (ID:{" "}
+              {selectedCourse.courseId})
+            </h2>
+            <div className="text-sm text-blue-600">
+              <p>Date: {selectedCourse.date}</p>
+              <p>Period: {selectedCourse.periodNumber}</p>
+              <p>Section: All</p>
+            </div>
+          </div>
+
+          <div className="mb-4">
+            <select
+              value={bulkStatus}
+              onChange={(e) => handleBulkStatusChange(e.target.value)}
+              className="border-2 border-blue-300 p-3 rounded-lg shadow-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            >
+              <option value="">Select Status for All</option>
+              <option value="P">Mark as Present</option>
+              <option value="A">Mark as Absent</option>
+              <option value="OD">Mark as On Duty</option>
+            </select>
+          </div>
+
+          <div className="overflow-x-auto rounded-lg shadow-md">
+            <table className="w-full border-collapse">
+              <thead className="bg-gradient-to-r from-blue-600 to-blue-800 text-white">
+                <tr>
+                  <th className="border border-blue-300 p-3 text-center">
+                    Roll No
+                  </th>
+                  <th className="border border-blue-300 p-3 text-center">
+                    Name
+                  </th>
+                  <th className="border border-blue-300 p-3 text-center">
+                    Section
+                  </th>
+                  <th className="border border-blue-300 p-3 text-center">
+                    Status
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {students.length > 0 ? (
+                  students.map((student, idx) => (
+                    <tr
+                      key={idx}
+                      className="even:bg-blue-50 odd:bg-white hover:bg-blue-100 transition-colors duration-150"
+                    >
+                      <td className="border border-blue-200 p-3 text-center text-blue-900">
+                        {student.rollnumber}
+                      </td>
+                      <td className="border border-blue-200 p-3 text-center text-blue-900">
+                        {student.name}
+                      </td>
+                      <td className="border border-blue-200 p-3 text-center text-blue-900">
+                        {student.sectionName || "N/A"}
+                      </td>
+                      <td className="border border-blue-200 p-3 text-center">
+                        <select
+                          value={student.status || ""} // Use fetched status or empty
+                          onChange={(e) =>
+                            handleAttendanceChange(
+                              student.rollnumber,
+                              e.target.value
+                            )
+                          }
+                          className={`border rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 text-blue-800 ${
+                            student.status === "P"
+                              ? "bg-green-100 border-green-300"
+                              : student.status === "A"
+                              ? "bg-red-100 border-red-300"
+                              : student.status === "OD"
+                              ? "bg-yellow-100 border-yellow-300"
+                              : "bg-gray-100 border-gray-300"
+                          }`}
+                          aria-label={`Attendance status for ${student.name}`}
+                          disabled={saving}
+                        >
+                          <option value="">Status</option>
+                          <option value="P">P</option>
+                          <option value="A">A</option>
+                          <option value="OD">OD</option>
+                        </select>
+                      </td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td
+                      colSpan="4"
+                      className="border border-blue-200 p-5 text-center text-blue-500"
+                    >
+                      No students found for this course.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+              {students.length > 0 && (
+                <tfoot>
+                  <tr className="bg-blue-100">
+                    <td
+                      colSpan="4"
+                      className="border border-blue-200 p-3 text-center text-blue-900 font-semibold"
+                    >
+                      Total: {students.length} students | Present:{" "}
+                      {attendanceSummary.present} | Absent:{" "}
+                      {attendanceSummary.absent} | On Duty:{" "}
+                      {attendanceSummary.onDuty}
+                    </td>
+                  </tr>
+                </tfoot>
+              )}
+            </table>
+          </div>
+
+          <div className="text-center mt-6">
+            <button
+              onClick={handleSave}
+              disabled={saving || !students.length}
+              className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 rounded-lg shadow-md disabled:opacity-50 transition-colors duration-200"
+            >
+              {saving ? (
+                <span className="flex items-center justify-center">
+                  <svg
+                    className="animate-spin -ml-1 mr-2 h-4 w-4 text-white"
+                    xmlns="http://www.w3.org/2000/svg"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                  >
+                    <circle
+                      className="opacity-25"
+                      cx="12"
+                      cy="12"
+                      r="10"
+                      stroke="currentColor"
+                      strokeWidth="4"
+                    ></circle>
+                    <path
+                      className="opacity-75"
+                      fill="currentColor"
+                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                    ></path>
+                  </svg>
+                  Saving...
+                </span>
+              ) : (
+                "Save Attendance"
+              )}
+            </button>
+          </div>
+        </div>
+      )}
+
+      <ToastContainer
+        position="top-right"
+        autoClose={3000}
+        hideProgressBar={false}
+        newestOnTop={false}
+        closeOnClick
+        rtl={false}
+        pauseOnFocusLoss
+        draggable
+        pauseOnHover
+        theme="light"
+      />
+    </div>
+  );
+}
+
+import React, { useState, useEffect } from 'react';
+import { Filter, Save, Edit, X, Clock, Coffee, UtensilsCrossed } from 'lucide-react';
+import axios from 'axios';
+
+const API_BASE_URL = 'http://localhost:4000';
+
+const Timetable = () => {
+  const [degrees, setDegrees] = useState([]);
+  const [batches, setBatches] = useState([]);
+  const [departments, setDepartments] = useState([]);
+  const [semesters, setSemesters] = useState([]);
+  const [courses, setCourses] = useState([]);
+  const [timetableData, setTimetableData] = useState([]);
+  const [selectedDegree, setSelectedDegree] = useState('');
+  const [selectedBatch, setSelectedBatch] = useState('');
+  const [selectedDept, setSelectedDept] = useState('');
+  const [selectedSem, setSelectedSem] = useState('');
+  const [editMode, setEditMode] = useState(false);
+  const [selectedCell, setSelectedCell] = useState(null);
+  const [showCourseModal, setShowCourseModal] = useState(false);
+  const [allocationMode, setAllocationMode] = useState('');
+  const [customCourseInput, setCustomCourseInput] = useState('');
+  const [error, setError] = useState(null);
+
+  const days = ['MON', 'TUE', 'WED', 'THU', 'FRI'];
+  const periods = [
+    { id: 1, name: 'Period 1', time: '9:15-10:05', type: 'class' },
+    { id: 2, name: 'Period 2', time: '10:05-10:55', type: 'class' },
+    { id: 3, name: 'Short Break', time: '10:55-11:10', type: 'break' },
+    { id: 4, name: 'Period 3', time: '11:10-12:00', type: 'class' },
+    { id: 5, name: 'Period 4', time: '12:00-12:50', type: 'class' },
+    { id: 6, name: 'Lunch Break', time: '12:50-1:50', type: 'lunch' },
+    { id: 7, name: 'Period 5', time: '1:50-2:40', type: 'class' },
+    { id: 8, name: 'Period 6', time: '2:40-3:30', type: 'class' },
+    { id: 9, name: 'Short Break', time: '3:30-3:45', type: 'break' },
+    { id: 10, name: 'Period 7', time: '3:45-4:30', type: 'class' },
+    { id: 11, name: 'Period 8', time: '4:30-5:15', type: 'class' },
+  ];
+
+  const getBackendPeriod = (frontendId) => {
+    const mapping = { 1: 1, 2: 2, 4: 3, 5: 4, 7: 5, 8: 6, 10: 7, 11: 8 };
+    return mapping[frontendId] || null;
+  };
+
+  const getFrontendId = (backendPeriod) => {
+    const mapping = { 1: 1, 2: 2, 3: 4, 4: 5, 5: 7, 6: 8, 7: 10, 8: 11 };
+    return mapping[backendPeriod] || null;
+  };
+
+  const getPeriodName = (backendPeriod) => {
+    const periodNames = {
+      1: 'Period 1', 2: 'Period 2', 3: 'Period 3', 4: 'Period 4',
+      5: 'Period 5', 6: 'Period 6', 7: 'Period 7', 8: 'Period 8'
+    };
+    return periodNames[backendPeriod] || `Period ${backendPeriod || 'Unknown'}`;
+  };
+
+  useEffect(() => {
+    const token = localStorage.getItem('token');
+    if (token) {
+      axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+    } else {
+      setError('No authentication token found. Please log in.');
+    }
+  }, []);
+
+  useEffect(() => {
+    const fetchDegrees = async () => {
+      try {
+        const response = await axios.get(`${API_BASE_URL}/api/admin/timetable/batches`);
+        console.log('Batches API response:', response.data);
+        if (response.data?.status === 'success' && Array.isArray(response.data.data)) {
+          const uniqueDegrees = [...new Set(response.data.data.map(batch => batch.degree))];
+          setDegrees(uniqueDegrees);
+          setBatches(response.data.data);
+          setError(null);
+        } else {
+          throw new Error('Invalid response structure: data is not an array');
+        }
+      } catch (error) {
+        console.error('Error fetching degrees:', error);
+        setError(error.response?.data?.message || 'Failed to load degrees. Please check the server.');
+        setDegrees([]);
+        setBatches([]);
+      }
+    };
+    fetchDegrees();
+  }, []);
+
+  useEffect(() => {
+    const fetchDepartments = async () => {
+      try {
+        const response = await axios.get(`${API_BASE_URL}/api/admin/timetable/departments`);
+        console.log('Departments API response:', response.data);
+        if (response.data?.status === 'success' && Array.isArray(response.data.data)) {
+          const mappedDepartments = response.data.data.map(dept => ({
+            departmentId: dept.Deptid,
+            departmentCode: dept.deptCode,
+            departmentName: dept.Deptname,
+          }));
+          setDepartments(mappedDepartments);
+          setError(null);
+        } else {
+          throw new Error('Invalid response structure: data is not an array');
+        }
+      } catch (error) {
+        console.error('Error fetching departments:', error);
+        setError(error.response?.data?.message || 'Failed to load departments. Please check the server.');
+        setDepartments([]);
+      }
+    };
+    fetchDepartments();
+  }, []);
+
+  useEffect(() => {
+    if (selectedDegree && selectedBatch && selectedDept) {
+      const fetchSemesters = async () => {
+        try {
+          const selectedBatchData = batches.find(batch => batch.batchId === parseInt(selectedBatch));
+          if (!selectedBatchData) {
+            throw new Error('Selected batch not found');
+          }
+          const response = await axios.get(`${API_BASE_URL}/api/admin/semesters/by-batch-branch`, {
+            params: { degree: selectedDegree, batch: selectedBatchData.batch, branch: selectedBatchData.branch },
+          });
+          console.log('Semesters API response:', response.data);
+          if (response.data?.status === 'success' && Array.isArray(response.data.data)) {
+            setSemesters(response.data.data);
+            setError(null);
+          } else {
+            throw new Error('Invalid response structure: data is not an array');
+          }
+        } catch (error) {
+          console.error('Error fetching semesters:', error);
+          setError(error.response?.data?.message || 'Failed to load semesters. Please try again later.');
+          setSemesters([]);
+        }
+      };
+      fetchSemesters();
+    } else {
+      setSemesters([]);
+    }
+  }, [selectedDegree, selectedBatch, selectedDept, batches]);
+
+  useEffect(() => {
+    if (selectedSem) {
+      const fetchCourses = async () => {
+        try {
+          const response = await axios.get(`${API_BASE_URL}/api/admin/semesters/${selectedSem}/courses`);
+          console.log('Courses API response:', response.data);
+          if (response.data?.status === 'success' && Array.isArray(response.data.data)) {
+            setCourses(response.data.data); // Expects courseId, courseCode, courseTitle
+            setError(null);
+          } else {
+            throw new Error('Invalid response structure: data is not an array');
+          }
+        } catch (error) {
+          console.error('Error fetching courses:', error);
+          setError(error.response?.data?.message || 'Failed to load courses. Please try again later.');
+          setCourses([]);
+        }
+      };
+      fetchCourses();
+    } else {
+      setCourses([]);
+    }
+  }, [selectedSem]);
+
+  useEffect(() => {
+    if (selectedSem) {
+      const fetchTimetable = async () => {
+        try {
+          const response = await axios.get(`${API_BASE_URL}/api/admin/timetable/semester/${selectedSem}`);
+          console.log('Timetable API response:', response.data);
+          if (response.data?.status === 'success' && Array.isArray(response.data.data)) {
+            response.data.data.forEach((entry, index) => {
+              if (!entry.dayOfWeek || entry.periodNumber === undefined) {
+                console.warn(`Invalid timetable entry at index ${index}:`, entry);
+              }
+            });
+            setTimetableData(response.data.data);
+            setError(null);
+          } else {
+            throw new Error('Invalid response structure: data is not an array');
+          }
+        } catch (error) {
+          console.error('Error fetching timetable:', error);
+          setError(error.response?.data?.message || 'Failed to load timetable. Please check the server logs.');
+          setTimetableData([]);
+        }
+      };
+      fetchTimetable();
+    } else {
+      setTimetableData([]);
+    }
+  }, [selectedSem]);
+
+  const handleCellClick = (day, periodId, periodType) => {
+    console.log(day, periodId, periodType);
+    if (periodType !== 'class' || !editMode || !selectedSem) return;
+    setSelectedCell({ day, periodId });
+    setAllocationMode('');
+    setCustomCourseInput('');
+    setShowCourseModal(true);
+  };
+
+  const handleCourseAssign = async (courseValue) => {
+    if (!selectedCell || !selectedSem || !courseValue) {
+      setShowCourseModal(false);
+      setSelectedCell(null);
+      return;
+    }
+
+    try {
+      const backendPeriodNumber = getBackendPeriod(selectedCell.periodId);
+      if (!backendPeriodNumber) {
+        throw new Error('Invalid period number');
+      }
+     const selectedCourse =
+       allocationMode === "select"
+         ? courses.find((c) => String(c.courseId) === String(courseValue))
+         : null;
+      await axios.post(`${API_BASE_URL}/api/admin/timetable/entry`, {
+        courseId: allocationMode === 'select' ? selectedCourse.courseId : courseValue,
+        courseTitle: allocationMode === 'manual' ? courseValue : undefined,
+        dayOfWeek: selectedCell.day,
+        periodNumber: backendPeriodNumber,
+        Deptid: parseInt(selectedDept),
+        semesterId: parseInt(selectedSem),
+      });
+
+      const response = await axios.get(`${API_BASE_URL}/api/admin/timetable/semester/${selectedSem}`);
+      if (response.data?.status === 'success' && Array.isArray(response.data.data)) {
+        setTimetableData(response.data.data);
+      }
+      setShowCourseModal(false);
+      setSelectedCell(null);
+      setAllocationMode('');
+      setCustomCourseInput('');
+      setError(null);
+    } catch (error) {
+      console.error('Error assigning course:', error);
+      setError(error.response?.data?.message || 'Failed to assign course');
+    }
+  };
+
+  const handleRemoveCourse = async (timetableId) => {
+    try {
+      await axios.delete(`${API_BASE_URL}/api/admin/timetable/entry/${timetableId}`);
+      const response = await axios.get(`${API_BASE_URL}/api/admin/timetable/semester/${selectedSem}`);
+      if (response.data?.status === 'success' && Array.isArray(response.data.data)) {
+        setTimetableData(response.data.data);
+      }
+      setError(null);
+    } catch (error) {
+      console.error('Error removing course:', error);
+      setError(error.response?.data?.message || 'Failed to remove course');
+    }
+  };
+
+  const renderPeriodHeader = (period) => {
+    const icons = {
+      break: <Coffee className="w-4 h-4" />,
+      lunch: <UtensilsCrossed className="w-4 h-4" />,
+      class: <Clock className="w-4 h-4" />,
+    };
+
+    return (
+      <div className="p-2 text-center font-medium border-r bg-gray-50 text-gray-500 min-h-[96px] flex flex-col justify-center truncate">
+        <div className="flex items-center justify-center gap-1 mb-1">
+          {icons[period.type]}
+          <span className="text-xs">{period.name}</span>
+        </div>
+        <div className="text-xs">{period.time}</div>
+      </div>
+    );
+  };
+
+  const renderTimetableCell = (day, period) => {
+    if (period.type !== 'class') {
+      return (
+        <div className="p-2 h-24 bg-gray-100 text-center text-gray-500 border-r flex items-center justify-center">
+          {period.type === 'break' ? '☕' : '🍽️'}
+        </div>
+      );
+    }
+
+    const cellData = timetableData.find((entry) => {
+      if (!entry || !entry.dayOfWeek || entry.periodNumber === undefined) {
+        console.warn('Invalid timetable entry:', entry);
+        return false;
+      }
+      return entry.dayOfWeek === day && getFrontendId(entry.periodNumber) === period.id;
+    });
+
+    const isSelected = selectedCell?.day === day && selectedCell?.periodId === period.id;
+
+    return (
+      <div
+        className={`relative p-2 h-24 border-r transition-all duration-200 ${
+          editMode ? 'cursor-pointer hover:bg-blue-50' : 'cursor-default'
+        } ${isSelected ? 'bg-blue-100 ring-2 ring-blue-500 z-10' : ''} ${
+          cellData ? 'bg-white' : 'bg-gray-50'
+        }`}
+        onClick={() => handleCellClick(day, period.id, period.type)}
+      >
+        {cellData ? (
+          <div className="h-full flex flex-col justify-between text-left">
+            <div>
+              <div className="font-semibold text-xs text-gray-900 mb-1 truncate">
+                {cellData.courseId || 'N/A'}
+              </div>
+              <div className="text-xs text-gray-600 truncate" title={cellData.courseTitle || cellData.courseId || 'N/A'}>
+                {cellData.courseTitle || cellData.courseId || 'N/A'}
+                {cellData.sectionName ? ` (${cellData.sectionName})` : ''}
+              </div>
+            </div>
+            {editMode && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleRemoveCourse(cellData.timetableId);
+                }}
+                className="absolute top-1 right-1 p-1 rounded-full bg-red-100 text-red-500 hover:bg-red-200 hover:text-red-700 opacity-50 hover:opacity-100 transition-opacity"
+                title="Remove course"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            )}
+          </div>
+        ) : (
+          editMode && (
+            <div className="h-full flex items-center justify-center text-gray-400 text-xs">
+              Click to assign
+            </div>
+          )
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <div className="p-6 max-w-7xl mx-auto bg-gray-50 min-h-screen font-sans">
+      {error && (
+        <div className="mb-4 p-3 bg-red-100 text-red-700 rounded-lg text-center">
+          {error}
+          <button
+            onClick={() => setError(null)}
+            className="ml-4 px-3 py-1 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
+      <div className="bg-white rounded-lg shadow-sm p-6 mb-6">
+        <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
+          <h1 className="text-3xl font-bold text-gray-900">Timetable Management</h1>
+          <div className="flex items-center gap-3">
+            {selectedSem && (
+              <button
+                onClick={() => setEditMode(!editMode)}
+                className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium"
+              >
+                {editMode ? (
+                  <>
+                    <Save className="w-4 h-4" />
+                    Save Changes
+                  </>
+                ) : (
+                  <>
+                    <Edit className="w-4 h-4" />
+                    Edit Timetable
+                  </>
+                )}
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div>
+            <label htmlFor="degree-select" className="block text-sm font-medium text-gray-700 mb-2">
+              Degree
+            </label>
+            <select
+              id="degree-select"
+              value={selectedDegree}
+              onChange={(e) => {
+                setSelectedDegree(e.target.value);
+                setSelectedBatch('');
+                setSelectedDept('');
+                setSelectedSem('');
+                setEditMode(false);
+                setError(null);
+              }}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            >
+              <option value="">Select Degree</option>
+              {degrees.length > 0 ? (
+                degrees.map(degree => (
+                  <option key={degree} value={degree}>
+                    {degree}
+                  </option>
+                ))
+              ) : (
+                <option value="" disabled>No degrees available</option>
+              )}
+            </select>
+          </div>
+
+          <div>
+            <label htmlFor="batch-select" className="block text-sm font-medium text-gray-700 mb-2">
+              Batch
+            </label>
+            <select
+              id="batch-select"
+              value={selectedBatch}
+              onChange={(e) => {
+                setSelectedBatch(e.target.value);
+                setSelectedDept('');
+                setSelectedSem('');
+                setEditMode(false);
+                setError(null);
+              }}
+              disabled={!selectedDegree}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-100"
+            >
+              <option value="">Select Batch</option>
+              {batches
+                .filter(batch => batch.degree === selectedDegree)
+                .map(batch => (
+                  <option key={batch.batchId} value={batch.batchId}>
+                    {batch.branch} ({batch.batchYears})
+                  </option>
+                ))}
+            </select>
+          </div>
+
+          <div>
+            <label htmlFor="dept-select" className="block text-sm font-medium text-gray-700 mb-2">
+              Department
+            </label>
+            <select
+              id="dept-select"
+              value={selectedDept}
+              onChange={(e) => {
+                setSelectedDept(e.target.value);
+                setSelectedSem('');
+                setEditMode(false);
+                setError(null);
+              }}
+              disabled={!selectedBatch}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-100"
+            >
+              <option value="">Select Department</option>
+              {departments
+                .filter(dept =>
+                  batches.some(batch =>
+                    batch.degree === selectedDegree &&
+                    batch.batchId === parseInt(selectedBatch) &&
+                    batch.branch.toUpperCase() === dept.departmentCode.toUpperCase()
+                  )
+                )
+                .map(dept => (
+                  <option key={dept.departmentId} value={dept.departmentId}>
+                    {dept.departmentName} ({dept.departmentCode})
+                  </option>
+                ))}
+            </select>
+          </div>
+
+          <div>
+            <label htmlFor="sem-select" className="block text-sm font-medium text-gray-700 mb-2">
+              Semester
+            </label>
+            <select
+              id="sem-select"
+              value={selectedSem}
+              onChange={(e) => {
+                setSelectedSem(e.target.value);
+                setEditMode(false);
+                setError(null);
+              }}
+              disabled={!selectedDept}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-100"
+            >
+              <option value="">Select Semester</option>
+              {semesters.length > 0 ? (
+                semesters.map(sem => (
+                  <option key={sem.semesterId} value={sem.semesterId}>
+                    Semester {sem.semesterNumber} - {sem.batchYears}
+                  </option>
+                ))
+              ) : (
+                <option value="" disabled>No semesters available</option>
+              )}
+            </select>
+          </div>
+        </div>
+      </div>
+
+      {selectedSem ? (
+        <div className="bg-white rounded-lg shadow-sm overflow-hidden">
+          <div className="p-4 border-b border-gray-200">
+            <h2 className="text-lg font-semibold text-gray-900">
+              {departments.find(d => d.departmentId === parseInt(selectedDept))?.departmentName || 'Department'} -{' '}
+              Semester {semesters.find(s => s.semesterId === parseInt(selectedSem))?.semesterNumber || 'N/A'}
+            </h2>
+            <p className="text-sm text-gray-500">
+              Degree: {selectedDegree || 'N/A'} | Batch: {batches.find(b => b.batchId === parseInt(selectedBatch))?.batchYears || 'N/A'} | Department Code: {departments.find(d => d.departmentId === parseInt(selectedDept))?.departmentCode || 'N/A'}
+            </p>
+          </div>
+
+          <div className="overflow-x-auto">
+            <div className="grid grid-cols-[140px_repeat(11,minmax(120px,120px))] min-w-[1400px]">
+              <div className="sticky top-0 left-0 bg-gray-100 z-30 p-2 font-semibold text-gray-700 border-r border-b text-left whitespace-nowrap">
+                Day/Period
+              </div>
+              {periods.map(period => (
+                <div key={period.id} className="sticky top-0 bg-gray-50 z-10 border-b border-r">
+                  {renderPeriodHeader(period)}
+                </div>
+              ))}
+
+              {days.map(day => (
+                <React.Fragment key={day}>
+                  <div className="sticky left-0 bg-gray-100 z-20 p-2 font-semibold text-gray-700 border-r border-b whitespace-nowrap">
+                    {day}
+                  </div>
+                  {periods.map(period => (
+                    <div key={`${day}-${period.id}`} className="border-b border-r">
+                      {renderTimetableCell(day, period)}
+                    </div>
+                  ))}
+                </React.Fragment>
+              ))}
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="bg-white rounded-lg shadow-sm p-8 text-center">
+          <Filter className="w-12 h-12 text-gray-300 mx-auto mb-4" />
+          <h3 className="text-lg font-medium text-gray-900 mb-2">Select Degree, Batch, Department & Semester</h3>
+          <p className="text-gray-500">Choose a degree, batch, department, and semester to view or create a timetable.</p>
+        </div>
+      )}
+
+      {showCourseModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-sm p-6 w-full max-w-md m-4">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-gray-900">Assign Course or Activity</h3>
+              <button
+                onClick={() => {
+                  setShowCourseModal(false);
+                  setAllocationMode('');
+                  setCustomCourseInput('');
+                  setError(null);
+                }}
+                className="text-gray-500 hover:text-gray-800 transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="mb-4">
+              <p className="text-sm text-gray-600 mb-2 font-medium">
+                Assigning for: <span className="font-semibold text-blue-600">{selectedCell?.day}, {periods.find(p => p.id === selectedCell?.periodId)?.name}</span>
+              </p>
+              <select
+                id="allocation-mode"
+                value={allocationMode}
+                onChange={(e) => {
+                  setAllocationMode(e.target.value);
+                  setCustomCourseInput('');
+                }}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent mb-3"
+              >
+                <option value="" disabled>Select allocation method...</option>
+                <option value="select">Select Course</option>
+                <option value="manual">Manual Entry</option>
+              </select>
+
+              {allocationMode === 'select' && (
+                <select
+                  id="course-select"
+                  value={customCourseInput}
+                  onChange={(e) => setCustomCourseInput(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent mb-3"
+                >
+                  <option value="" disabled>Select a course...</option>
+                  {courses.length > 0 ? (
+                    courses.map(course => (
+                      <option key={course.courseId} value={course.courseId}>
+                        {course.courseId} - {course.courseTitle}
+                      </option>
+                    ))
+                  ) : (
+                    <option value="" disabled>No courses available</option>
+                  )}
+                </select>
+              )}
+
+              {allocationMode === 'manual' && (
+                <input
+                  type="text"
+                  placeholder="Enter activity (e.g., Guest Lecture)"
+                  value={customCourseInput}
+                  onChange={(e) => setCustomCourseInput(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent mb-3"
+                />
+              )}
+
+              <button
+                onClick={() => handleCourseAssign(customCourseInput)}
+                disabled={!customCourseInput || !allocationMode}
+                className="w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
+              >
+                Assign
+              </button>
+              {(!customCourseInput || !allocationMode) && (
+                <p className="text-sm text-red-600 mt-2">
+                  {allocationMode ? 'Please enter or select a course/activity.' : 'Please select an allocation method.'}
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {selectedSem && (
+        <div className="mt-6 bg-white rounded-lg shadow-sm p-6">
+          <h3 className="text-lg font-semibold mb-4 text-gray-900">Courses for this Semester</h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {courses.length > 0 ? (
+              courses.map(course => {
+                const scheduleCount = timetableData.filter(entry => entry.courseId === course.courseId).length;
+                return (
+                  <div key={course.courseId} className="p-4 border border-gray-200 rounded-lg hover:shadow-md transition-shadow bg-white">
+                    <div className="font-semibold text-gray-900">{course.courseId}</div>
+                    <div className="text-sm text-gray-600 mb-1">{course.courseTitle}</div>
+                    <div className={`flex items-center gap-2 text-xs font-medium p-2 rounded-md ${scheduleCount > 0 ? 'bg-green-100 text-green-700' : 'bg-orange-100 text-orange-700'}`}>
+                      <Clock className="w-3.5 h-3.5" />
+                      <span>{scheduleCount > 0 ? `${scheduleCount} periods scheduled` : 'Not scheduled'}</span>
+                    </div>
+                  </div>
+                );
+              })
+            ) : (
+              <p className="text-gray-500 col-span-full">No courses available for this semester.</p>
+            )}
+          </div>
+          <h3 className="text-lg font-semibold mt-6 mb-4 text-gray-900">Scheduled Activities</h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {timetableData
+              .filter(entry => !courses.some(course => course.courseId === entry.courseId))
+              .map(entry => (
+                <div key={entry.timetableId} className="p-4 border border-gray-200 rounded-lg hover:shadow-md transition-shadow bg-white">
+                  <div className="font-semibold text-gray-900">{entry.courseId}</div>
+                  <div className="text-sm text-gray-600 mb-1">{entry.courseTitle || entry.courseId}</div>
+                  <div className="text-xs text-gray-600">
+                    {entry.dayOfWeek}, {getPeriodName(entry.periodNumber)}
+                    {entry.sectionName ? ` (${entry.sectionName})` : ''}
+                  </div>
+                </div>
+              ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default Timetable; 
+
+//new
+import React, { useState, useEffect } from "react";
+import {
+  Filter,
+  Save,
+  Edit,
+  X,
+  Clock,
+  Coffee,
+  UtensilsCrossed,
+} from "lucide-react";
+import axios from "axios";
+
+const API_BASE_URL = "http://localhost:4000";
+
+const Timetable = () => {
+  // Existing states
+  const [degrees, setDegrees] = useState([]);
+  const [batches, setBatches] = useState([]);
+  const [departments, setDepartments] = useState([]);
+  const [semesters, setSemesters] = useState([]);
+  const [courses, setCourses] = useState([]);
+  const [timetableData, setTimetableData] = useState([]);
+  const [selectedDegree, setSelectedDegree] = useState("");
+  const [selectedBatch, setSelectedBatch] = useState("");
+  const [selectedDept, setSelectedDept] = useState("");
+  const [selectedSem, setSelectedSem] = useState("");
+  const [editMode, setEditMode] = useState(false);
+  const [selectedCell, setSelectedCell] = useState(null);
+  const [showCourseModal, setShowCourseModal] = useState(false);
+  const [allocationMode, setAllocationMode] = useState("");
+  const [customCourseInput, setCustomCourseInput] = useState("");
+  const [error, setError] = useState(null);
+
+  // NEW: Vertical states
+  const [regulation, setRegulation] = useState(null);
+  const [verticals, setVerticals] = useState([]);
+  const [selectedVertical, setSelectedVertical] = useState("");
+  const [verticalCourses, setVerticalCourses] = useState([]);
+  const [selectedRegulationCourse, setSelectedRegulationCourse] = useState("");
+
+  // Modal states
+  const [showRegulationDropdown, setShowRegulationDropdown] = useState(false);
+  const [showVerticalDropdown, setShowVerticalDropdown] = useState(false);
+
+  const days = ["MON", "TUE", "WED", "THU", "FRI"];
+  const periods = [
+    { id: 1, name: "Period 1", time: "9:15-10:05", type: "class" },
+    { id: 2, name: "Period 2", time: "10:05-10:55", type: "class" },
+    { id: 3, name: "Short Break", time: "10:55-11:10", type: "break" },
+    { id: 4, name: "Period 3", time: "11:10-12:00", type: "class" },
+    { id: 5, name: "Period 4", time: "12:00-12:50", type: "class" },
+    { id: 6, name: "Lunch Break", time: "12:50-1:50", type: "lunch" },
+    { id: 7, name: "Period 5", time: "1:50-2:40", type: "class" },
+    { id: 8, name: "Period 6", time: "2:40-3:30", type: "class" },
+    { id: 9, name: "Short Break", time: "3:30-3:45", type: "break" },
+    { id: 10, name: "Period 7", time: "3:45-4:30", type: "class" },
+    { id: 11, name: "Period 8", time: "4:30-5:15", type: "class" },
+  ];
+
+  const getBackendPeriod = (frontendId) => {
+    const mapping = { 1: 1, 2: 2, 4: 3, 5: 4, 7: 5, 8: 6, 10: 7, 11: 8 };
+    return mapping[frontendId] || null;
+  };
+
+  const getFrontendId = (backendPeriod) => {
+    const mapping = { 1: 1, 2: 2, 3: 4, 4: 5, 5: 7, 6: 8, 7: 10, 8: 11 };
+    return mapping[backendPeriod] || null;
+  };
+
+  const getPeriodName = (backendPeriod) => {
+    const periodNames = {
+      1: "Period 1",
+      2: "Period 2",
+      3: "Period 3",
+      4: "Period 4",
+      5: "Period 5",
+      6: "Period 6",
+      7: "Period 7",
+      8: "Period 8",
+    };
+    return periodNames[backendPeriod] || `Period ${backendPeriod || "Unknown"}`;
+  };
+
+  // Auth token setup
+  useEffect(() => {
+    const token = localStorage.getItem("token");
+    if (token) {
+      axios.defaults.headers.common["Authorization"] = `Bearer ${token}`;
+    } else {
+      setError("No authentication token found. Please log in.");
+    }
+  }, []);
+
+  // Fetch degrees/batches
+  useEffect(() => {
+    const fetchDegrees = async () => {
+      try {
+        const response = await axios.get(
+          `${API_BASE_URL}/api/admin/timetable/batches`
+        );
+        if (
+          response.data?.status === "success" &&
+          Array.isArray(response.data.data)
+        ) {
+          const uniqueDegrees = [
+            ...new Set(response.data.data.map((batch) => batch.degree)),
+          ];
+          setDegrees(uniqueDegrees);
+          setBatches(response.data.data);
+          setError(null);
+        } else {
+          throw new Error("Invalid response structure: data is not an array");
+        }
+      } catch (error) {
+        console.error("Error fetching degrees:", error);
+        setError(
+          error.response?.data?.message ||
+            "Failed to load degrees. Please check the server."
+        );
+        setDegrees([]);
+        setBatches([]);
+      }
+    };
+    fetchDegrees();
+  }, []);
+
+  // Fetch departments
+  useEffect(() => {
+    const fetchDepartments = async () => {
+      try {
+        const response = await axios.get(
+          `${API_BASE_URL}/api/admin/timetable/departments`
+        );
+        if (
+          response.data?.status === "success" &&
+          Array.isArray(response.data.data)
+        ) {
+          const mappedDepartments = response.data.data.map((dept) => ({
+            departmentId: dept.Deptid,
+            departmentCode: dept.deptCode,
+            departmentName: dept.Deptname,
+          }));
+          setDepartments(mappedDepartments);
+          setError(null);
+        } else {
+          throw new Error("Invalid response structure: data is not an array");
+        }
+      } catch (error) {
+        console.error("Error fetching departments:", error);
+        setError(
+          error.response?.data?.message ||
+            "Failed to load departments. Please check the server."
+        );
+        setDepartments([]);
+      }
+    };
+    fetchDepartments();
+  }, []);
+
+  // Fetch semesters
+  useEffect(() => {
+    if (selectedDegree && selectedBatch && selectedDept) {
+      const fetchSemesters = async () => {
+        try {
+          const selectedBatchData = batches.find(
+            (batch) => batch.batchId === parseInt(selectedBatch)
+          );
+          if (!selectedBatchData) {
+            throw new Error("Selected batch not found");
+          }
+          const response = await axios.get(
+            `${API_BASE_URL}/api/admin/semesters/by-batch-branch`,
+            {
+              params: {
+                degree: selectedDegree,
+                batch: selectedBatchData.batch,
+                branch: selectedBatchData.branch,
+              },
+            }
+          );
+          if (
+            response.data?.status === "success" &&
+            Array.isArray(response.data.data)
+          ) {
+            setSemesters(response.data.data);
+            setError(null);
+          } else {
+            throw new Error("Invalid response structure: data is not an array");
+          }
+        } catch (error) {
+          console.error("Error fetching semesters:", error);
+          setError(
+            error.response?.data?.message ||
+              "Failed to load semesters. Please try again later."
+          );
+          setSemesters([]);
+        }
+      };
+      fetchSemesters();
+    } else {
+      setSemesters([]);
+    }
+  }, [selectedDegree, selectedBatch, selectedDept, batches]);
+
+  // NEW: Fetch regulation and verticals when batch/dept/semester selected
+  // FIXED: Load regulation as soon as Batch + Department are selected
+  useEffect(() => {
+    // Reset everything first
+    setRegulation(null);
+    setVerticals([]);
+    setSelectedVertical("");
+    setVerticalCourses([]);
+    setSelectedRegulationCourse("");
+
+    if (!selectedBatch || !selectedDept) {
+      return;
+    }
+
+    const fetchRegulationAndVerticals = async () => {
+      try {
+        console.log("Fetching regulation for:", {
+          selectedBatch,
+          selectedDept,
+        }); // DEBUG
+
+        const regRes = await axios.get(
+          `${API_BASE_URL}/api/admin/regulation`,
+          {
+            params: {
+              batchId: selectedBatch,
+              Deptid: selectedDept,
+            },
+          }
+        );
+
+        if (regRes.data.status === "success" && regRes.data.data) {
+          console.log("Regulation found:", regRes.data.data);
+          setRegulation(regRes.data.data);
+
+          // Now load verticals
+          const vertRes = await axios.get(
+            `${API_BASE_URL}/api/admin/verticals/${regRes.data.data.regulationId}`
+          );
+          console.log("Verticals:", vertRes.data.data);
+          setVerticals(vertRes.data.data || []);
+        } else {
+          console.log("No regulation found");
+          setRegulation(null);
+          setVerticals([]);
+        }
+      } catch (err) {
+        console.error(
+          "Failed to load regulation/verticals:",
+          err.response || err
+        );
+        setRegulation(null);
+        setVerticals([]);
+      }
+    };
+
+    fetchRegulationAndVerticals();
+  }, [selectedBatch, selectedDept]); // Only these two!
+
+  // NEW: Fetch vertical courses when vertical selected
+   useEffect(() => {
+     if (!selectedVertical || !selectedSem) {
+       setVerticalCourses([]);
+       return;
+     }
+
+     const sem = semesters.find((s) => s.semesterId === parseInt(selectedSem));
+     if (!sem) return;
+
+     const load = async () => {
+       try {
+         const res = await axios.get(
+           `${API_BASE_URL}/api/admin/vertical-courses/${selectedVertical}/${sem.semesterNumber}`
+         );
+         setVerticalCourses(res.data.data || []);
+       } catch (err) {
+         console.error(err);
+         setVerticalCourses([]);
+       }
+     };
+     load();
+   }, [selectedVertical, selectedSem, semesters]);
+
+  // Fetch courses for semester
+  useEffect(() => {
+    if (selectedSem) {
+      const fetchCourses = async () => {
+        try {
+          const response = await axios.get(
+            `${API_BASE_URL}/api/admin/semesters/${selectedSem}/courses`
+          );
+          if (
+            response.data?.status === "success" &&
+            Array.isArray(response.data.data)
+          ) {
+            setCourses(response.data.data);
+            setError(null);
+          } else {
+            throw new Error("Invalid response structure: data is not an array");
+          }
+        } catch (error) {
+          console.error("Error fetching courses:", error);
+          setError(
+            error.response?.data?.message ||
+              "Failed to load courses. Please try again later."
+          );
+          setCourses([]);
+        }
+      };
+      fetchCourses();
+    } else {
+      setCourses([]);
+    }
+  }, [selectedSem]);
+
+  // Fetch timetable
+  useEffect(() => {
+    if (selectedSem) {
+      const fetchTimetable = async () => {
+        try {
+          const response = await axios.get(
+            `${API_BASE_URL}/api/admin/timetable/semester/${selectedSem}`
+          );
+          if (
+            response.data?.status === "success" &&
+            Array.isArray(response.data.data)
+          ) {
+            response.data.data.forEach((entry, index) => {
+              if (!entry.dayOfWeek || entry.periodNumber === undefined) {
+                console.warn(
+                  `Invalid timetable entry at index ${index}:`,
+                  entry
+                );
+              }
+            });
+            setTimetableData(response.data.data);
+            setError(null);
+          } else {
+            throw new Error("Invalid response structure: data is not an array");
+          }
+        } catch (error) {
+          console.error("Error fetching timetable:", error);
+          setError(
+            error.response?.data?.message ||
+              "Failed to load timetable. Please check the server logs."
+          );
+          setTimetableData([]);
+        }
+      };
+      fetchTimetable();
+    } else {
+      setTimetableData([]);
+    }
+  }, [selectedSem]);
+
+  // Handle cell click
+  const handleCellClick = (day, periodId, periodType) => {
+    if (periodType !== "class" || !editMode || !selectedSem) return;
+    setSelectedCell({ day, periodId });
+    setAllocationMode("");
+    setCustomCourseInput("");
+    setSelectedRegulationCourse("");
+    setShowRegulationDropdown(false);
+    setShowVerticalDropdown(false);
+    setShowCourseModal(true);
+  };
+
+  // NEW: Handle vertical course assignment
+  // const handleVerticalCourseAssign = async () => {
+  //   if (
+  //     !selectedCell ||
+  //     !selectedSem ||
+  //     !selectedRegulationCourse ||
+  //     !selectedVertical
+  //   ) {
+  //     setShowCourseModal(false);
+  //     setSelectedCell(null);
+  //     return;
+  //   }
+
+  //   try {
+  //     const backendPeriodNumber = getBackendPeriod(selectedCell.periodId);
+  //     if (!backendPeriodNumber) {
+  //       throw new Error("Invalid period number");
+  //     }
+
+  //     const response = await axios.post(
+  //       `${API_BASE_URL}/api/admin/timetable/assign-vertical-period`,
+  //       {
+  //         verticalId: parseInt(selectedVertical),
+  //         regCourseId: selectedRegulationCourse,
+  //         dayOfWeek: selectedCell.day,
+  //         periodNumber: backendPeriodNumber,
+  //         Deptid: parseInt(selectedDept),
+  //         semesterId: parseInt(selectedSem),
+  //       }
+  //     );
+
+  //     if (response.data.status === "success") {
+  //       // Refresh timetable
+  //       const timetableResponse = await axios.get(
+  //         `${API_BASE_URL}/api/admin/timetable/semester/${selectedSem}`
+  //       );
+  //       if (
+  //         timetableResponse.data?.status === "success" &&
+  //         Array.isArray(timetableResponse.data.data)
+  //       ) {
+  //         setTimetableData(timetableResponse.data.data);
+  //       }
+
+  //       setShowCourseModal(false);
+  //       setSelectedCell(null);
+  //       setAllocationMode("");
+  //       setSelectedVertical("");
+  //       setSelectedRegulationCourse("");
+  //       setError(null);
+  //     }
+  //   } catch (error) {
+  //     console.error("Error assigning vertical course:", error);
+  //     setError(
+  //       error.response?.data?.message || "Failed to assign vertical course"
+  //     );
+  //   }
+  // };
+
+  const handleVerticalCourseAssign = async () => {
+    try {
+      // Get all vertical batches belonging to the selected vertical
+      const allVerticalBatches = verticals
+        .filter(
+          (v) =>
+            v.regulation === regulation && v.verticalName === selectedVertical
+        )
+        .map((v) => v.batchName);
+
+      // Allocate for each batch
+      for (let batch of allVerticalBatches) {
+        await axios.post(`${API_BASE_URL}/api/admin/timetable/allocate`, {
+          day: selectedCell.day,
+          period: getBackendPeriod(selectedCell.periodId),
+          course: selectedRegulationCourse,
+          batch: batch,
+        });
+      }
+
+      alert("Allocated for all vertical groups successfully!");
+      setShowCourseModal(false);
+    } catch (error) {
+      console.error("Vertical allocation error:", error);
+      alert("Failed to allocate vertical course");
+    }
+  };
+//Assign all verticals
+const handleAssignAllVerticals = async () => {
+  try {
+    if (!regulation) {
+      alert("No regulation found.");
+      return;
+    }
+
+    // Allocate for all vertical sections under this regulation
+    for (let v of verticals) {
+      await axios.post(`${API_BASE_URL}/api/admin/timetable/allocate`, {
+        day: selectedCell.day,
+        period: getBackendPeriod(selectedCell.periodId),
+        course: selectedRegulationCourse,
+        batch: v.batchId, // VERY IMPORTANT
+        vertical: v.verticalId,
+      });
+    }
+
+    alert("Assigned to ALL vertical sections successfully!");
+    setShowCourseModal(false);
+  } catch (err) {
+    console.error(err);
+    alert("Failed to assign course to all verticals.");
+  }
+};
+
+  // Existing course assignment
+  const handleCourseAssign = async (courseValue) => {
+    if (!selectedCell || !selectedSem || !courseValue) {
+      setShowCourseModal(false);
+      setSelectedCell(null);
+      return;
+    }
+
+    try {
+      const backendPeriodNumber = getBackendPeriod(selectedCell.periodId);
+      if (!backendPeriodNumber) {
+        throw new Error("Invalid period number");
+      }
+
+      const selectedCourse =
+        allocationMode === "select"
+          ? courses.find((c) => String(c.courseId) === String(courseValue))
+          : null;
+
+      await axios.post(`${API_BASE_URL}/api/admin/timetable/entry`, {
+        courseId:
+          allocationMode === "select" ? selectedCourse.courseId : courseValue,
+        courseTitle: allocationMode === "manual" ? courseValue : undefined,
+        dayOfWeek: selectedCell.day,
+        periodNumber: backendPeriodNumber,
+        Deptid: parseInt(selectedDept),
+        semesterId: parseInt(selectedSem),
+      });
+
+      const response = await axios.get(
+        `${API_BASE_URL}/api/admin/timetable/semester/${selectedSem}`
+      );
+      if (
+        response.data?.status === "success" &&
+        Array.isArray(response.data.data)
+      ) {
+        setTimetableData(response.data.data);
+      }
+
+      setShowCourseModal(false);
+      setSelectedCell(null);
+      setAllocationMode("");
+      setCustomCourseInput("");
+      setError(null);
+    } catch (error) {
+      console.error("Error assigning course:", error);
+      setError(error.response?.data?.message || "Failed to assign course");
+    }
+  };
+
+  // Remove course
+ const handleRemoveCourse = async (timetableId) => {
+   try {
+     await axios.delete(
+       `${API_BASE_URL}/api/admin/timetable/entry/${timetableId}`
+     );
+
+     // Refresh timetable data
+     const response = await axios.get(
+       `${API_BASE_URL}/api/admin/timetable/semester/${selectedSem}`
+     );
+
+     if (
+       response.data?.status === "success" &&
+       Array.isArray(response.data.data)
+     ) {
+       setTimetableData(response.data.data);
+     }
+
+     // THIS IS THE KEY FIX:
+     setSelectedCell(null); // ← ADD THIS LINE
+     setShowCourseModal(false); // ← Also close modal if open
+
+     setError(null);
+   } catch (error) {
+     console.error("Error removing course:", error);
+     setError(error.response?.data?.message || "Failed to remove course");
+   }
+ };
+
+  // Render period header
+  const renderPeriodHeader = (period) => {
+    const icons = {
+      break: <Coffee className="w-4 h-4" />,
+      lunch: <UtensilsCrossed className="w-4 h-4" />,
+      class: <Clock className="w-4 h-4" />,
+    };
+
+    return (
+      <div className="p-2 text-center font-medium border-r bg-gray-50 text-gray-500 min-h-[96px] flex flex-col justify-center truncate">
+        <div className="flex items-center justify-center gap-1 mb-1">
+          {icons[period.type]}
+          <span className="text-xs">{period.name}</span>
+        </div>
+        <div className="text-xs">{period.time}</div>
+      </div>
+    );
+  };
+
+  // Render timetable cell
+  const renderTimetableCell = (day, period) => {
+    if (period.type !== "class") {
+      return (
+        <div className="p-2 h-24 bg-gray-100 text-center text-gray-500 border-r flex items-center justify-center">
+          {period.type === "break" ? "☕" : "🍽️"}
+        </div>
+      );
+    }
+
+    const cellData = timetableData.find((entry) => {
+      if (!entry || !entry.dayOfWeek || entry.periodNumber === undefined) {
+        console.warn("Invalid timetable entry:", entry);
+        return false;
+      }
+      return (
+        entry.dayOfWeek === day &&
+        getFrontendId(entry.periodNumber) === period.id
+      );
+    });
+
+    const isSelected =
+      selectedCell?.day === day && selectedCell?.periodId === period.id;
+
+    return (
+      <div
+        className={`relative p-2 h-24 border-r transition-all duration-200 ${
+          editMode ? "cursor-pointer hover:bg-blue-50" : "cursor-default"
+        } ${isSelected ? "bg-blue-100 ring-2 ring-blue-500 z-10" : ""} ${
+          cellData ? "bg-white" : "bg-gray-50"
+        }`}
+        onClick={() => handleCellClick(day, period.id, period.type)}
+      >
+        {cellData ? (
+          <div className="h-full flex flex-col justify-between text-left">
+            <div>
+              <div className="font-semibold text-xs text-gray-900 mb-1 truncate">
+                {cellData.courseId || "N/A"}
+              </div>
+              <div
+                className="text-xs text-gray-600 truncate"
+                title={cellData.courseTitle || cellData.courseId || "N/A"}
+              >
+                {cellData.courseTitle || cellData.courseId || "N/A"}
+                {cellData.sectionName ? ` (${cellData.sectionName})` : ""}
+              </div>
+            </div>
+            {editMode && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleRemoveCourse(cellData.timetableId);
+                }}
+                className="absolute top-1 right-1 p-1 rounded-full bg-red-100 text-red-500 hover:bg-red-200 hover:text-red-700 opacity-50 hover:opacity-100 transition-opacity"
+                title="Remove course"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            )}
+          </div>
+        ) : (
+          editMode && (
+            <div className="h-full flex items-center justify-center text-gray-400 text-xs">
+              Click to assign
+            </div>
+          )
+        )}
+      </div>
+    );
+  };
+
+  // NEW: Render vertical course selection UI
+  const renderVerticalCourseSelection = () => {
+    return (
+      <div className="space-y-4">
+        {/* Regulation Display */}
+        {regulation ? (
+          <div className="p-4 bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-lg">
+            <p className="text-sm font-semibold text-blue-900">
+              Regulation: {regulation.regulationYear}
+            </p>
+            <p className="text-xs text-blue-700 mt-1">
+              {verticals.length} vertical(s) available
+            </p>
+          </div>
+        ) : (
+          <p className="text-sm text-orange-600">
+            No regulation found for this batch/department.
+          </p>
+        )}
+
+        {/* Vertical Selector */}
+        {verticals.length > 0 && (
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Choose Vertical <span className="text-red-500">*</span>
+            </label>
+            <select
+              value={selectedVertical}
+              onChange={(e) => {
+                setSelectedVertical(e.target.value);
+                setSelectedRegulationCourse(""); // reset course
+                setVerticalCourses([]); // reset courses
+                if (e.target.value && selectedSem) {
+                  const semNum = semesters.find(
+                    (s) => s.semesterId === parseInt(selectedSem)
+                  )?.semesterNumber;
+                  if (semNum) {
+                    axios
+                      .get(
+                        `${API_BASE_URL}/api/admin/timetable/vertical-courses/${e.target.value}/${semNum}`
+                      )
+                      .then((res) => {
+                        setVerticalCourses(res.data.data || []);
+                      })
+                      .catch(() => setVerticalCourses([]));
+                  }
+                }
+              }}
+              className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            >
+              <option value="">Select a vertical</option>
+              {verticals.map((v) => (
+                <option key={v.verticalId} value={v.verticalId}>
+                  {v.verticalName}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        {/* Vertical Courses */}
+        {verticalCourses.length > 0 && selectedVertical && (
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Select Course <span className="text-red-500">*</span>
+            </label>
+            <select
+              value={selectedRegulationCourse}
+              onChange={(e) => setSelectedRegulationCourse(e.target.value)}
+              className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            >
+              <option value="">Choose a course</option>
+              {verticalCourses.map((course) => (
+                <option key={course.regCourseId} value={course.regCourseId}>
+                  {course.courseCode} - {course.courseTitle} ({course.credits}{" "}
+                  Cr)
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        {/* Loading or empty state */}
+        {selectedVertical && verticalCourses.length === 0 && (
+          <p className="text-sm text-gray-500">
+            No courses found for this vertical.
+          </p>
+        )}
+      </div>
+    );
+  };
+  return (
+    <div className="p-6 max-w-7xl mx-auto bg-gray-50 min-h-screen font-sans">
+      {error && (
+        <div className="mb-4 p-3 bg-red-100 text-red-700 rounded-lg text-center">
+          {error}
+          <button
+            onClick={() => setError(null)}
+            className="ml-4 px-3 py-1 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
+      <div className="bg-white rounded-lg shadow-sm p-6 mb-6">
+        <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
+          <h1 className="text-3xl font-bold text-gray-900">
+            Timetable Management
+          </h1>
+          <div className="flex items-center gap-3">
+            {selectedSem && (
+              <button
+                onClick={() => setEditMode(!editMode)}
+                className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium"
+              >
+                {editMode ? (
+                  <>
+                    <Save className="w-4 h-4" />
+                    Save Changes
+                  </>
+                ) : (
+                  <>
+                    <Edit className="w-4 h-4" />
+                    Edit Timetable
+                  </>
+                )}
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Filters - Extended to 6 columns for verticals */}
+        <div className="grid grid-cols-1 md:grid-cols-6 gap-4">
+          {/* Degree */}
+          <div>
+            <label
+              htmlFor="degree-select"
+              className="block text-sm font-medium text-gray-700 mb-2"
+            >
+              Degree
+            </label>
+            <select
+              id="degree-select"
+              value={selectedDegree}
+              onChange={(e) => {
+                setSelectedDegree(e.target.value);
+                setSelectedBatch("");
+                setSelectedDept("");
+                setSelectedSem("");
+                setEditMode(false);
+                setError(null);
+              }}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            >
+              <option value="">Select Degree</option>
+              {degrees.length > 0 ? (
+                degrees.map((degree) => (
+                  <option key={degree} value={degree}>
+                    {degree}
+                  </option>
+                ))
+              ) : (
+                <option value="" disabled>
+                  No degrees available
+                </option>
+              )}
+            </select>
+          </div>
+
+          {/* Batch */}
+          <div>
+            <label
+              htmlFor="batch-select"
+              className="block text-sm font-medium text-gray-700 mb-2"
+            >
+              Batch
+            </label>
+            <select
+              id="batch-select"
+              value={selectedBatch}
+              onChange={(e) => {
+                setSelectedBatch(e.target.value);
+                setSelectedDept("");
+                setSelectedSem("");
+                setEditMode(false);
+                setError(null);
+              }}
+              disabled={!selectedDegree}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-100"
+            >
+              <option value="">Select Batch</option>
+              {batches
+                .filter((batch) => batch.degree === selectedDegree)
+                .map((batch) => (
+                  <option key={batch.batchId} value={batch.batchId}>
+                    {batch.branch} ({batch.batchYears})
+                  </option>
+                ))}
+            </select>
+          </div>
+
+          {/* Department */}
+          <div>
+            <label
+              htmlFor="dept-select"
+              className="block text-sm font-medium text-gray-700 mb-2"
+            >
+              Department
+            </label>
+            <select
+              id="dept-select"
+              value={selectedDept}
+              onChange={(e) => {
+                setSelectedDept(e.target.value);
+                setSelectedSem("");
+                setEditMode(false);
+                setError(null);
+              }}
+              disabled={!selectedBatch}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-100"
+            >
+              <option value="">Select Department</option>
+              {departments
+                .filter((dept) =>
+                  batches.some(
+                    (batch) =>
+                      batch.degree === selectedDegree &&
+                      batch.batchId === parseInt(selectedBatch) &&
+                      batch.branch.toUpperCase() ===
+                        dept.departmentCode.toUpperCase()
+                  )
+                )
+                .map((dept) => (
+                  <option key={dept.departmentId} value={dept.departmentId}>
+                    {dept.departmentName} ({dept.departmentCode})
+                  </option>
+                ))}
+            </select>
+          </div>
+
+          {/* Semester */}
+          <div>
+            <label
+              htmlFor="sem-select"
+              className="block text-sm font-medium text-gray-700 mb-2"
+            >
+              Semester
+            </label>
+            <select
+              id="sem-select"
+              value={selectedSem}
+              onChange={(e) => {
+                setSelectedSem(e.target.value);
+                setEditMode(false);
+                setError(null);
+              }}
+              disabled={!selectedDept}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-100"
+            >
+              <option value="">Select Semester</option>
+              {semesters.length > 0 ? (
+                semesters.map((sem) => (
+                  <option key={sem.semesterId} value={sem.semesterId}>
+                    Semester {sem.semesterNumber} - {sem.batchYears}
+                  </option>
+                ))
+              ) : (
+                <option value="" disabled>
+                  No semesters available
+                </option>
+              )}
+            </select>
+          </div>
+
+          {/* NEW: Regulation Info */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Regulation
+            </label>
+            <div
+              className={`w-full px-3 py-2 border rounded-lg ${
+                regulation
+                  ? "bg-blue-50 border-blue-200 text-blue-800"
+                  : "bg-gray-100 border-gray-300 text-gray-500"
+              }`}
+            >
+              {regulation ? (
+                <>
+                  <span className="font-medium">
+                    {regulation.regulationYear}
+                  </span>
+                  {verticals.length > 0 && (
+                    <span className="ml-1 text-xs">
+                      ({verticals.length} verticals)
+                    </span>
+                  )}
+                </>
+              ) : (
+                <span className="text-xs">Select batch to see regulation</span>
+              )}
+            </div>
+          </div>
+
+          {/* NEW: Selected Vertical */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Vertical
+            </label>
+            <div
+              className={`w-full px-3 py-2 border rounded-lg ${
+                selectedVertical
+                  ? "bg-green-50 border-green-200 text-green-800"
+                  : "bg-gray-100 border-gray-300 text-gray-500"
+              }`}
+            >
+              {selectedVertical ? (
+                verticals.find(
+                  (v) => v.verticalId === parseInt(selectedVertical)
+                )?.verticalName || "Unknown"
+              ) : (
+                <span className="text-xs">
+                  {regulation ? "Select a vertical" : "Select regulation first"}
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Timetable Display */}
+      {selectedSem ? (
+        <div className="bg-white rounded-lg shadow-sm overflow-hidden">
+          <div className="p-4 border-b border-gray-200">
+            <h2 className="text-lg font-semibold text-gray-900">
+              {departments.find(
+                (d) => d.departmentId === parseInt(selectedDept)
+              )?.departmentName || "Department"}{" "}
+              - Semester{" "}
+              {semesters.find((s) => s.semesterId === parseInt(selectedSem))
+                ?.semesterNumber || "N/A"}
+            </h2>
+            <p className="text-sm text-gray-500">
+              Degree: {selectedDegree || "N/A"} | Batch:{" "}
+              {batches.find((b) => b.batchId === parseInt(selectedBatch))
+                ?.batchYears || "N/A"}{" "}
+              | Department Code:{" "}
+              {departments.find(
+                (d) => d.departmentId === parseInt(selectedDept)
+              )?.departmentCode || "N/A"}
+              {regulation && ` | Regulation: ${regulation.regulationYear}`}
+              {selectedVertical &&
+                ` | Vertical: ${
+                  verticals.find(
+                    (v) => v.verticalId === parseInt(selectedVertical)
+                  )?.verticalName
+                }`}
+            </p>
+          </div>
+
+          <div className="overflow-x-auto">
+            <div className="grid grid-cols-[140px_repeat(11,minmax(120px,120px))] min-w-[1400px]">
+              <div className="sticky top-0 left-0 bg-gray-100 z-30 p-2 font-semibold text-gray-700 border-r border-b text-left whitespace-nowrap">
+                Day/Period
+              </div>
+              {periods.map((period) => (
+                <div
+                  key={period.id}
+                  className="sticky top-0 bg-gray-50 z-10 border-b border-r"
+                >
+                  {renderPeriodHeader(period)}
+                </div>
+              ))}
+
+              {days.map((day) => (
+                <React.Fragment key={day}>
+                  <div className="sticky left-0 bg-gray-100 z-20 p-2 font-semibold text-gray-700 border-r border-b whitespace-nowrap">
+                    {day}
+                  </div>
+                  {periods.map((period) => (
+                    <div
+                      key={`${day}-${period.id}`}
+                      className="border-b border-r"
+                    >
+                      {renderTimetableCell(day, period)}
+                    </div>
+                  ))}
+                </React.Fragment>
+              ))}
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="bg-white rounded-lg shadow-sm p-8 text-center">
+          <Filter className="w-12 h-12 text-gray-300 mx-auto mb-4" />
+          <h3 className="text-lg font-medium text-gray-900 mb-2">
+            Select Degree, Batch, Department & Semester
+          </h3>
+          <p className="text-gray-500">
+            Choose a degree, batch, department, and semester to view or create a
+            timetable.
+          </p>
+        </div>
+      )}
+
+      {/* NEW: Enhanced Course Modal */}
+      {showCourseModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-sm p-6 w-full max-w-lg m-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-gray-900">
+                Assign Course or Activity
+              </h3>
+              <button
+                onClick={() => {
+                  setShowCourseModal(false);
+                  setAllocationMode("");
+                  setCustomCourseInput("");
+                  setSelectedRegulationCourse("");
+                  setSelectedVertical("");
+                  setShowRegulationDropdown(false);
+                  setShowVerticalDropdown(false);
+                  setError(null);
+                }}
+                className="text-gray-500 hover:text-gray-800 transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="mb-4">
+              <p className="text-sm text-gray-600 mb-2 font-medium">
+                Assigning for:{" "}
+                <span className="font-semibold text-blue-600">
+                  {selectedCell?.day},{" "}
+                  {periods.find((p) => p.id === selectedCell?.periodId)?.name}
+                </span>
+              </p>
+
+              {/* Allocation Mode */}
+              <select
+                id="allocation-mode"
+                value={allocationMode}
+                onChange={(e) => {
+                  setAllocationMode(e.target.value);
+                  setCustomCourseInput("");
+                  setSelectedRegulationCourse("");
+                  setSelectedVertical("");
+                }}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent mb-3"
+              >
+                <option value="" disabled>
+                  Select allocation method...
+                </option>
+                <option value="select">Select Regular Course</option>
+                <option value="manual">Manual Entry (Activity)</option>
+                <option value="vertical" disabled={!regulation}>
+                  {regulation
+                    ? "Assign Vertical Course"
+                    : "Select regulation first"}
+                </option>
+              </select>
+
+              {/* Regular Course Selection */}
+              {allocationMode === "select" && (
+                <div className="mb-3">
+                  <select
+                    id="course-select"
+                    value={customCourseInput}
+                    onChange={(e) => setCustomCourseInput(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  >
+                    <option value="" disabled>
+                      Select a course...
+                    </option>
+                    {courses.length > 0 ? (
+                      courses.map((course) => (
+                        <option key={course.courseId} value={course.courseId}>
+                          {course.courseCode} - {course.courseTitle}
+                        </option>
+                      ))
+                    ) : (
+                      <option value="" disabled>
+                        No courses available
+                      </option>
+                    )}
+                  </select>
+                </div>
+              )}
+
+              {/* Manual Entry */}
+              {allocationMode === "manual" && (
+                <div className="mb-3">
+                  <input
+                    type="text"
+                    placeholder="Enter activity (e.g., Guest Lecture, Seminar)"
+                    value={customCourseInput}
+                    onChange={(e) => setCustomCourseInput(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  />
+                </div>
+              )}
+
+              {/* NEW: Vertical Course Selection */}
+              {allocationMode === "vertical" && renderVerticalCourseSelection()}
+
+              {/* Assign Button */}
+              {/* <button
+                onClick={
+                  allocationMode === "vertical"
+                    ? handleVerticalCourseAssign
+                    : () => handleCourseAssign(customCourseInput)
+                }
+                disabled={
+                  allocationMode === "vertical"
+                    ? !selectedRegulationCourse || !selectedVertical
+                    : !customCourseInput || !allocationMode
+                }
+                className="w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
+              >
+                {allocationMode === "vertical"
+                  ? "Assign to All Vertical Sections"
+                  : "Assign"}
+              </button> */}
+              <button
+                onClick={handleAssignAllVerticals}
+                className="btn-primary"
+              >
+                Assign to All Vertical Sections
+              </button>
+
+              {/* Validation Message */}
+              {allocationMode === "vertical" &&
+                !selectedRegulationCourse &&
+                selectedVertical && (
+                  <p className="text-sm text-red-600 mt-2">
+                    Please select a vertical course.
+                  </p>
+                )}
+              {allocationMode === "vertical" &&
+                !selectedVertical &&
+                regulation && (
+                  <p className="text-sm text-red-600 mt-2">
+                    Please select a vertical.
+                  </p>
+                )}
+              {allocationMode !== "vertical" &&
+                (!customCourseInput || !allocationMode) && (
+                  <p className="text-sm text-red-600 mt-2">
+                    {allocationMode
+                      ? "Please enter or select a course/activity."
+                      : "Please select an allocation method."}
+                  </p>
+                )}
+
+              {/* NEW: Vertical Info */}
+              {allocationMode === "vertical" && regulation && (
+                <div className="mt-3 p-2 bg-green-50 border border-green-200 rounded-lg">
+                  <p className="text-xs text-green-800">
+                    <span className="font-medium">Note:</span> This will assign
+                    the course to{" "}
+                    <span className="font-semibold">
+                      {verticals.length} vertical section(s)
+                    </span>
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Courses and Activities Panel */}
+      {selectedSem && (
+        <div className="mt-6 bg-white rounded-lg shadow-sm p-6">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Regular Courses */}
+            <div>
+              <h3 className="text-lg font-semibold mb-4 text-gray-900">
+                Regular Courses ({courses.length})
+              </h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {courses.length > 0 ? (
+                  courses.map((course) => {
+                    const scheduleCount = timetableData.filter(
+                      (entry) => entry.courseId === course.courseId
+                    ).length;
+                    return (
+                      <div
+                        key={course.courseId}
+                        className="p-4 border border-gray-200 rounded-lg hover:shadow-md transition-shadow bg-white"
+                      >
+                        <div className="font-semibold text-gray-900">
+                          {course.courseCode}
+                        </div>
+                        <div className="text-sm text-gray-600 mb-1 truncate">
+                          {course.courseTitle}
+                        </div>
+                        <div
+                          className={`flex items-center gap-2 text-xs font-medium p-2 rounded-md ${
+                            scheduleCount > 0
+                              ? "bg-green-100 text-green-700"
+                              : "bg-orange-100 text-orange-700"
+                          }`}
+                        >
+                          <Clock className="w-3.5 h-3.5" />
+                          <span>
+                            {scheduleCount > 0
+                              ? `${scheduleCount} periods`
+                              : "Not scheduled"}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })
+                ) : (
+                  <p className="text-gray-500 col-span-full">
+                    No regular courses available.
+                  </p>
+                )}
+              </div>
+            </div>
+
+            {/* NEW: Vertical Courses */}
+            <div>
+              <h3 className="text-lg font-semibold mb-4 text-gray-900">
+                Vertical Courses{" "}
+                {selectedVertical ? `(${verticalCourses.length})` : ""}
+              </h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {verticalCourses.length > 0 && selectedVertical ? (
+                  verticalCourses.map((course) => {
+                    const scheduleCount = timetableData.filter((entry) =>
+                      entry.courseTitle?.includes(course.courseCode)
+                    ).length;
+                    return (
+                      <div
+                        key={course.regCourseId}
+                        className="p-4 border border-gray-200 rounded-lg hover:shadow-md transition-shadow bg-white"
+                      >
+                        <div className="font-semibold text-gray-900">
+                          {course.courseCode}
+                        </div>
+                        <div className="text-sm text-gray-600 mb-1 truncate">
+                          {course.courseTitle}
+                        </div>
+                        <div
+                          className={`flex items-center gap-2 text-xs font-medium p-2 rounded-md ${
+                            scheduleCount > 0
+                              ? "bg-purple-100 text-purple-700"
+                              : "bg-orange-100 text-orange-700"
+                          }`}
+                        >
+                          <Clock className="w-3.5 h-3.5" />
+                          <span>
+                            {scheduleCount > 0
+                              ? `${scheduleCount} periods`
+                              : "Not scheduled"}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })
+                ) : selectedVertical ? (
+                  <p className="text-gray-500 col-span-full">
+                    No vertical courses available for this selection.
+                  </p>
+                ) : (
+                  <p className="text-gray-500 col-span-full">
+                    {regulation
+                      ? "Select a vertical to see its courses"
+                      : "Select a regulation first"}
+                  </p>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Scheduled Activities */}
+          {timetableData.filter(
+            (entry) =>
+              !courses.some((course) => course.courseId === entry.courseId)
+          ).length > 0 && (
+            <div className="mt-6">
+              <h3 className="text-lg font-semibold mb-4 text-gray-900">
+                Scheduled Activities
+              </h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {timetableData
+                  .filter(
+                    (entry) =>
+                      !courses.some(
+                        (course) => course.courseId === entry.courseId
+                      )
+                  )
+                  .map((entry) => (
+                    <div
+                      key={entry.timetableId}
+                      className="p-4 border border-gray-200 rounded-lg hover:shadow-md transition-shadow bg-white"
+                    >
+                      <div className="font-semibold text-gray-900">
+                        {entry.courseId}
+                      </div>
+                      <div className="text-sm text-gray-600 mb-1">
+                        {entry.courseTitle || entry.courseId}
+                      </div>
+                      <div className="text-xs text-gray-600">
+                        {entry.dayOfWeek}, {getPeriodName(entry.periodNumber)}
+                        {entry.sectionName ? ` (${entry.sectionName})` : ""}
+                      </div>
+                    </div>
+                  ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default Timetable;

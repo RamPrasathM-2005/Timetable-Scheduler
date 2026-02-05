@@ -1,0 +1,33 @@
+@import "tailwindcss";
+.swal-toast {
+  background-color: #1f2937; /* Matches bg-gray-900 */
+  color: black;
+  border-radius: 0.75rem;
+  padding: 1rem;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1),
+    0 2px 4px -1px rgba(0, 0, 0, 0.06);
+  z-index: 10000; /* Ensure it appears above modal */
+  width: 300px;
+  font-size: 0.875rem;
+}
+
+.swal-toast .swal2-title {
+  color: black;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.swal-toast .swal2-content {
+  color: black; /* Matches text-gray-300 */
+  font-size: 0.75rem;
+}
+
+.swal-toast .swal2-success-ring {
+  border-color: #10b981; /* Matches success green */
+}
+
+.swal-toast .swal2-icon-error {
+  border-color: #ef4444; /* Matches error red */
+}
+
+
