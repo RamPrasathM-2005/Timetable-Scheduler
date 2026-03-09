@@ -24,6 +24,8 @@ import BatchRegulationAllocation from './pages/admin/BatchRegulationAllocation';
 
 // NotFound
 import NotFound from "./pages/NotFound";
+import LabTimetable from "./pages/admin/LabTimetable.jsx";
+import LabCreation from "./pages/admin/LabCreation.jsx"
 // import StudentStaffMapping from "./pages/admin/StudentEnrollmentsView";
 //  import StudentEnrollmentsView from "./pages/admin/StudentEnrollmentsView";
 
@@ -62,7 +64,8 @@ const routes = [
       { path: 'manage-courses', element: <ManageCourses /> },
       { path: 'manage-staff', element: <ManageStaff /> },
       { path: 'timetable', element: <Timetable /> },
-
+      { path: 'labtimetable', element: <LabTimetable />},
+      {path: 'labcreation', element: <LabCreation/>},
       { path: 'course-recommendation', element: <CourseRecommendation /> },
     ]
   },

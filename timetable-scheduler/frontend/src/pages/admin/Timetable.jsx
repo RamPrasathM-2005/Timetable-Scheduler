@@ -8,7 +8,8 @@ import {
   Coffee,
   UtensilsCrossed,
   Sparkles,
-  Loader
+  Loader,
+  Beaker // Icon for Lab
 } from "lucide-react";
 import axios from "axios";
 
@@ -16,42 +17,46 @@ const API_BASE_URL = "http://localhost:4000";
 const ALLOCATE_URL = `${API_BASE_URL}/api/admin/timetable/allocate`;
 
 const Timetable = () => {
+  // --- STATE MANAGEMENT ---
   const [degrees, setDegrees] = useState([]);
   const [batches, setBatches] = useState([]);
   const [departments, setDepartments] = useState([]);
   const [semesters, setSemesters] = useState([]);
   const [courses, setCourses] = useState([]);
   const [timetableData, setTimetableData] = useState([]);
+
+  // Selections
   const [selectedDegree, setSelectedDegree] = useState("");
   const [selectedBatch, setSelectedBatch] = useState("");
   const [selectedDept, setSelectedDept] = useState("");
   const [selectedSem, setSelectedSem] = useState("");
+
+  // UI Modes
   const [editMode, setEditMode] = useState(false);
-  const [selectedCell, setSelectedCell] = useState(null);
+  const [isGenerating, setIsGenerating] = useState(false);
   const [showCourseModal, setShowCourseModal] = useState(false);
-  const [allocationMode, setAllocationMode] = useState(""); // "select" | "manual" | "bucket"
+  const [selectedCell, setSelectedCell] = useState(null);
+
+  // Manual Allocation State
+  const [allocationMode, setAllocationMode] = useState(""); 
   const [customCourseInput, setCustomCourseInput] = useState("");
   const [selectedBucketId, setSelectedBucketId] = useState("");
-  const [error, setError] = useState(null);
-  
-  // New State for Auto Generation
-  const [isGenerating, setIsGenerating] = useState(false);
-
-  // Bucket states
   const [electiveBuckets, setElectiveBuckets] = useState([]);
   const [bucketCourses, setBucketCourses] = useState([]);
+  const [error, setError] = useState(null);
 
+  // --- CONFIGURATION ---
   const days = ["MON", "TUE", "WED", "THU", "FRI"];
   const periods = [
     { id: 1, name: "Period 1", time: "9:15-10:05", type: "class" },
     { id: 2, name: "Period 2", time: "10:05-10:55", type: "class" },
-    { id: 3, name: "Short Break", time: "10:55-11:10", type: "break" },
+    { id: 3, name: "Break", time: "10:55-11:10", type: "break" }, // Shortened name
     { id: 4, name: "Period 3", time: "11:10-12:00", type: "class" },
     { id: 5, name: "Period 4", time: "12:00-12:50", type: "class" },
-    { id: 6, name: "Lunch Break", time: "12:50-1:50", type: "lunch" },
+    { id: 6, name: "Lunch", time: "12:50-1:50", type: "lunch" }, // Shortened name
     { id: 7, name: "Period 5", time: "1:50-2:40", type: "class" },
     { id: 8, name: "Period 6", time: "2:40-3:30", type: "class" },
-    { id: 9, name: "Short Break", time: "3:30-3:45", type: "break" },
+    { id: 9, name: "Break", time: "3:30-3:45", type: "break" }, // Shortened name
     { id: 10, name: "Period 7", time: "3:45-4:30", type: "class" },
     { id: 11, name: "Period 8", time: "4:30-5:15", type: "class" },
   ];
@@ -66,14 +71,14 @@ const Timetable = () => {
     return mapping[backendPeriod] || null;
   };
 
-  // Auth
+  // --- API INTERCEPTOR ---
   useEffect(() => {
     const token = localStorage.getItem("token");
     if (token)
       axios.defaults.headers.common["Authorization"] = `Bearer ${token}`;
   }, []);
 
-  // Fetch basic data
+  // --- DATA FETCHING ---
   useEffect(() => {
     axios
       .get(`${API_BASE_URL}/api/admin/timetable/batches`)
@@ -118,12 +123,9 @@ const Timetable = () => {
       axios
         .get(`${API_BASE_URL}/api/admin/semesters/${selectedSem}/courses`)
         .then((res) => setCourses(res.data.data || []));
-    }
-  }, [selectedSem]);
 
-  useEffect(() => {
-    if (selectedSem) {
       fetchTimetable();
+      fetchBucketsAndCourses();
     }
   }, [selectedSem]);
 
@@ -134,62 +136,50 @@ const Timetable = () => {
       .catch((err) => console.error(err));
   };
 
-  // Fetch Elective Buckets + Courses
-  useEffect(() => {
-    if (!selectedSem) {
-      setElectiveBuckets([]);
-      setBucketCourses([]);
-      return;
+  const fetchBucketsAndCourses = async () => {
+    try {
+      const res = await axios.get(
+        `${API_BASE_URL}/api/admin/elective-buckets/${selectedSem}`
+      );
+      const buckets = res.data.data || [];
+      setElectiveBuckets(buckets);
+
+      const allCourses = await Promise.all(
+        buckets.map(async (b) => {
+          try {
+            const cRes = await axios.get(
+              `${API_BASE_URL}/api/admin/bucket-courses/${b.bucketId}`
+            );
+            return (cRes.data.data || []).map((c) => ({
+              ...c,
+              bucketId: b.bucketId,
+              bucketNumber: b.bucketNumber,
+              bucketName: b.bucketName || `Bucket ${b.bucketNumber}`,
+            }));
+          } catch {
+            return [];
+          }
+        })
+      );
+      setBucketCourses(allCourses.flat());
+    } catch (err) {
+      console.error("Failed to load buckets", err);
     }
-
-    const fetchBuckets = async () => {
-      try {
-        const res = await axios.get(
-          `${API_BASE_URL}/api/admin/elective-buckets/${selectedSem}`
-        );
-        const buckets = res.data.data || [];
-        setElectiveBuckets(buckets);
-
-        const allCourses = await Promise.all(
-          buckets.map(async (b) => {
-            try {
-              const cRes = await axios.get(
-                `${API_BASE_URL}/api/admin/bucket-courses/${b.bucketId}`
-              );
-              return (cRes.data.data || []).map((c) => ({
-                ...c,
-                bucketId: b.bucketId,
-                bucketNumber: b.bucketNumber,
-                bucketName: b.bucketName || `Bucket ${b.bucketNumber}`,
-              }));
-            } catch {
-              return [];
-            }
-          })
-        );
-        setBucketCourses(allCourses.flat());
-      } catch (err) {
-        console.error("Failed to load buckets", err);
-      }
-    };
-    fetchBuckets();
-  }, [selectedSem]);
-
-  const handleCellClick = (day, periodId, type) => {
-    if (type !== "class" || !editMode || !selectedSem) return;
-
-    setSelectedCell({ day, periodId });
-    setAllocationMode(""); // reset mode
-    setCustomCourseInput(""); // reset input
-    setSelectedBucketId(""); // reset bucket
-    setShowCourseModal(true); // open modal
   };
 
-  // --- AUTOMATIC GENERATION ---
+  // --- HANDLERS ---
+  const handleCellClick = (day, periodId, type) => {
+    if (type !== "class" || !editMode || !selectedSem) return;
+    setSelectedCell({ day, periodId });
+    setAllocationMode(""); 
+    setCustomCourseInput(""); 
+    setSelectedBucketId(""); 
+    setShowCourseModal(true); 
+  };
+
   const handleAutoGenerate = async () => {
     if (!selectedSem) return alert("Please select a semester first.");
     
-    // Warning confirmation
     if (!window.confirm("⚠️ This will OVERWRITE the current timetable for this semester. Existing data will be deleted. Do you want to continue?")) {
       return;
     }
@@ -197,11 +187,8 @@ const Timetable = () => {
     setIsGenerating(true);
     try {
       const res = await axios.post(`${API_BASE_URL}/api/admin/timetable/generate/${selectedSem}`);
-      
-      // Refresh Data immediately after generation
       fetchTimetable();
       
-      // Show Allocation Report
       const report = res.data.report || [];
       const successMsg = res.data.message || "Generated Successfully";
 
@@ -216,16 +203,13 @@ const Timetable = () => {
       alert("❌ Generation Failed: " + (err.response?.data?.message || err.message));
     } finally {
       setIsGenerating(false);
-      setEditMode(false); // Switch off edit mode to view results cleanly
+      setEditMode(false);
     }
   };
 
-  // --- MANUAL ALLOCATION ---
   const handleCourseAssign = async (value) => {
     if (!selectedCell || !value) return;
-
     const backendPeriod = getBackendPeriod(selectedCell.periodId);
-    if (!backendPeriod) return alert("Invalid period");
 
     try {
       const payload = {
@@ -236,13 +220,12 @@ const Timetable = () => {
       };
 
       if (allocationMode === "select") {
-        payload.course = value; // single regular course
+        payload.course = value; 
       } else if (allocationMode === "manual") {
-        payload.course = null; // free slot (or manual text if backend supported it)
+        payload.course = null; 
       }
 
       await axios.post(ALLOCATE_URL, payload);
-
       fetchTimetable();
       setShowCourseModal(false);
       alert("Assignment successful!");
@@ -252,12 +235,9 @@ const Timetable = () => {
     }
   };
 
-  // Assign bucket
   const handleAssignBucket = async () => {
     if (!selectedBucketId) return alert("Please select a bucket");
-
     const backendPeriod = getBackendPeriod(selectedCell.periodId);
-    if (!backendPeriod) return alert("Invalid period");
 
     try {
       const payload = {
@@ -269,7 +249,6 @@ const Timetable = () => {
       };
 
       await axios.post(ALLOCATE_URL, payload);
-
       fetchTimetable();
       setShowCourseModal(false);
       alert("All courses from the bucket assigned successfully!");
@@ -279,13 +258,8 @@ const Timetable = () => {
     }
   };
 
-  // Delete all entries in a cell (soft delete)
   const handleRemoveCourses = async (day, periodId) => {
-    const frontendPeriod = periodId;
-    const backendPeriod = getBackendPeriod(frontendPeriod);
-
-    if (!backendPeriod) return alert("Invalid period");
-
+    const backendPeriod = getBackendPeriod(periodId);
     const entriesToDelete = timetableData.filter(
       (e) => e.dayOfWeek === day && e.periodNumber === backendPeriod
     );
@@ -300,19 +274,16 @@ const Timetable = () => {
           )
         )
       );
-
       fetchTimetable();
       alert("Courses removed successfully!");
     } catch (err) {
       console.error("Delete error:", err);
-      alert(
-        "Failed to remove courses: " +
-          (err.response?.data?.message || err.message)
-      );
+      alert("Failed to remove courses");
     }
   };
 
-  // Render period header and cell
+  // --- RENDER HELPERS ---
+
   const renderPeriodHeader = (period) => {
     const icons = {
       break: <Coffee className="w-4 h-4" />,
@@ -321,12 +292,12 @@ const Timetable = () => {
     };
 
     return (
-      <div className="p-2 text-center font-medium border-r bg-gray-50 text-gray-500 min-h-[96px] flex flex-col justify-center">
-        <div className="flex items-center justify-center gap-1 mb-1">
+      <div className="p-1 text-center font-medium border-r bg-gray-50 text-gray-600 min-h-[60px] flex flex-col justify-center items-center overflow-hidden">
+        <div className="flex items-center gap-1 mb-0.5">
           {icons[period.type]}
-          <span className="text-xs">{period.name}</span>
+          <span className="text-[10px] uppercase font-bold">{period.name}</span>
         </div>
-        <div className="text-xs">{period.time}</div>
+        <div className="text-[9px] text-gray-400 whitespace-nowrap">{period.time}</div>
       </div>
     );
   };
@@ -334,272 +305,243 @@ const Timetable = () => {
   const renderCell = (day, period) => {
     if (period.type !== "class") {
       return (
-        <div className="p-2 h-24 bg-gray-100 text-center text-gray-500 border-r flex items-center justify-center">
-          {period.type === "break" ? "Coffee" : "Food"}
+        <div className="p-1 h-20 bg-gray-100 text-center text-gray-400 border-r flex flex-col items-center justify-center text-[10px] font-bold">
+          {period.type === "break" ? <Coffee className="w-5 h-5 mb-1 opacity-50"/> : <UtensilsCrossed className="w-5 h-5 mb-1 opacity-50"/>}
+          <span className="hidden xl:block">{period.type.toUpperCase()}</span>
         </div>
       );
     }
 
-    // Find ALL entries for this day + period
     const entries = timetableData.filter(
       (e) => e.dayOfWeek === day && getFrontendId(e.periodNumber) === period.id
     );
 
-    const selected =
-      selectedCell?.day === day && selectedCell?.periodId === period.id;
+    const selected = selectedCell?.day === day && selectedCell?.periodId === period.id;
+    const uniqueCourseIds = [...new Set(entries.map((e) => e.courseId))];
+    const isSingleCourse = uniqueCourseIds.length === 1 && entries.length > 0;
+    const isLabSplit = isSingleCourse && entries.length > 1;
 
     return (
       <div
-        className={`relative p-2 h-24 border-r transition-all ${
-          editMode ? "cursor-pointer hover:bg-indigo-50" : ""
-        } ${selected ? "bg-indigo-100 ring-2 ring-indigo-500" : ""} ${
-          entries.length > 0 ? "bg-white" : "bg-gray-50"
-        }`}
+        className={`relative h-20 border-r border-b transition-all flex flex-col justify-center
+          ${editMode ? "cursor-pointer hover:bg-indigo-50" : ""} 
+          ${selected ? "bg-indigo-100 ring-2 ring-indigo-500 inset-0 z-10" : ""} 
+          ${entries.length > 0 ? "bg-white" : "bg-gray-50/50"}
+        `}
         onClick={() => handleCellClick(day, period.id, period.type)}
       >
         {entries.length > 0 ? (
-          <div className="h-full flex flex-col justify-between">
-            {entries.length === 1 ? (
-              // Single course (regular or manual)
-              <>
-                <div className="font-semibold text-xs text-gray-900 truncate p-1">
-                  {entries[0].courseTitle || entries[0].courseId}
+          <div className="h-full w-full p-1 flex flex-col justify-between overflow-hidden">
+            
+            {isSingleCourse ? (
+              // Regular Course or Lab
+              <div className="flex flex-col h-full justify-center">
+                <div className="font-bold text-[10px] md:text-xs text-gray-900 leading-tight line-clamp-2 text-center" title={entries[0].courseTitle}>
+                  {entries[0].courseTitle}
                 </div>
-                <div className="text-xs text-gray-600 truncate px-1 pb-1">
-                  {entries[0].courseCode || "Regular Course"}
+                <div className="text-[9px] text-gray-500 text-center mt-1 font-mono">
+                  {entries[0].courseCode}
                 </div>
-              </>
+                
+                {isLabSplit && (
+                  <div className="mt-1 flex justify-center">
+                     <span className="inline-flex items-center gap-0.5 bg-blue-100 text-blue-800 text-[8px] px-1 py-0.5 rounded border border-blue-200 font-bold uppercase tracking-wider">
+                       <Beaker className="w-2.5 h-2.5" /> Lab
+                     </span>
+                  </div>
+                )}
+              </div>
             ) : (
-              // Multiple courses → likely from a bucket
-              <div className="text-center h-full flex flex-col justify-center">
-                <div className="font-bold text-sm text-purple-700">
-                  Elective Bucket
+              // Elective Bucket
+              <div className="text-center h-full flex flex-col justify-center items-center">
+                <div className="font-bold text-[10px] text-purple-700 bg-purple-100 px-1.5 py-0.5 rounded border border-purple-200">
+                  Elective
                 </div>
-                <div className="text-xs text-purple-600">
-                  {entries.length} courses
+                <div className="text-[9px] text-purple-600 mt-1">
+                  {entries.length} options
                 </div>
               </div>
             )}
 
-            {editMode && entries.length > 0 && (
+            {editMode && (
               <button
                 onClick={(e) => {
                   e.stopPropagation();
                   handleRemoveCourses(day, period.id);
                 }}
-                className="absolute top-1 right-1 p-1 rounded-full bg-red-100 text-red-600 hover:bg-red-200 z-10"
+                className="absolute top-0 right-0 p-0.5 bg-red-100 text-red-600 hover:bg-red-200"
               >
                 <X className="w-3 h-3" />
               </button>
             )}
           </div>
         ) : editMode ? (
-          <div className="h-full flex items-center justify-center text-gray-400 text-xs">
-            Click to assign
+          <div className="flex items-center justify-center text-gray-300 text-xs h-full">
+            +
           </div>
         ) : null}
       </div>
     );
   };
 
+  // --- MAIN RENDER ---
   return (
-    <div className="p-6 max-w-7xl mx-auto bg-gray-50 min-h-screen font-sans">
+    // Changed max-w-7xl to w-full and added padding
+    <div className="p-4 w-full bg-gray-100 min-h-screen font-sans">
+      
       {/* Header & Filters */}
-      <div className="bg-white rounded-lg shadow p-6 mb-6">
-        <div className="flex justify-between items-center mb-6">
-          <h1 className="text-4xl font-black text-gray-900">
-            Timetable Management
+      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4 mb-4">
+        <div className="flex flex-col md:flex-row justify-between items-center mb-4 gap-4">
+          <h1 className="text-2xl font-black text-gray-800 flex items-center gap-2">
+            <Clock className="w-6 h-6 text-indigo-600"/>
+            Timetable Manager
           </h1>
           
           {selectedSem && (
-            <div className="flex gap-3">
-              {/* Auto Generate Button */}
+            <div className="flex gap-2">
               <button
                 onClick={handleAutoGenerate}
                 disabled={isGenerating}
-                className={`flex items-center gap-2 px-6 py-3 rounded-xl text-lg font-bold shadow-md transition-all ${
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold shadow-sm transition-all ${
                   isGenerating
                     ? "bg-gray-400 text-white cursor-not-allowed"
-                    : "bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white transform hover:scale-105"
+                    : "bg-indigo-600 hover:bg-indigo-700 text-white"
                 }`}
               >
-                {isGenerating ? (
-                  <>
-                    <Loader className="w-5 h-5 animate-spin" />
-                    Generating...
-                  </>
-                ) : (
-                  <>
-                    <Sparkles className="w-5 h-5" />
-                    Auto Generate
-                  </>
-                )}
+                {isGenerating ? <Loader className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+                {isGenerating ? "Generating..." : "Auto-Gen"}
               </button>
 
-              {/* Edit/Save Button */}
               <button
                 onClick={() => setEditMode(!editMode)}
                 disabled={isGenerating}
-                className={`flex items-center gap-3 px-6 py-3 rounded-xl text-lg font-bold shadow-md transition-all ${
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold shadow-sm transition-all ${
                   editMode
                   ? "bg-green-600 hover:bg-green-700 text-white"
                   : "bg-gray-800 hover:bg-gray-900 text-white"
                 }`}
               >
-                {editMode ? (
-                  <>
-                    <Save className="w-5 h-5" /> Done
-                  </>
-                ) : (
-                  <>
-                    <Edit className="w-5 h-5" /> Manual Edit
-                  </>
-                )}
+                {editMode ? <Save className="w-4 h-4" /> : <Edit className="w-4 h-4" />}
+                {editMode ? "Save" : "Edit"}
               </button>
             </div>
           )}
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Degree
-            </label>
-            <select
-              value={selectedDegree}
-              onChange={(e) => {
-                setSelectedDegree(e.target.value);
-                setSelectedBatch("");
-                setSelectedDept("");
-                setSelectedSem("");
-                setEditMode(false);
-              }}
-              className="w-full px-3 py-2 border rounded-lg"
-            >
-              <option value="">Select Degree</option>
-              {degrees.map((d) => (
-                <option key={d} value={d}>
-                  {d}
-                </option>
-              ))}
-            </select>
-          </div>
+        {/* Compact Filters Grid */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          <select
+            value={selectedDegree}
+            onChange={(e) => {
+              setSelectedDegree(e.target.value);
+              setSelectedBatch("");
+              setSelectedDept("");
+              setSelectedSem("");
+              setEditMode(false);
+            }}
+            className="w-full px-3 py-2 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-indigo-500 outline-none"
+          >
+            <option value="">Degree...</option>
+            {degrees.map((d) => <option key={d} value={d}>{d}</option>)}
+          </select>
 
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Batch
-            </label>
-            <select
-              value={selectedBatch}
-              onChange={(e) => {
-                setSelectedBatch(e.target.value);
-                setSelectedDept("");
-                setSelectedSem("");
-              }}
-              disabled={!selectedDegree}
-              className="w-full px-3 py-2 border rounded-lg"
-            >
-              <option value="">Select Batch</option>
-              {batches
-                .filter((b) => b.degree === selectedDegree)
-                .map((b) => (
-                  <option key={b.batchId} value={b.batchId}>
-                    {b.branch} ({b.batchYears})
-                  </option>
-                ))}
-            </select>
-          </div>
+          <select
+            value={selectedBatch}
+            onChange={(e) => {
+              setSelectedBatch(e.target.value);
+              setSelectedDept("");
+              setSelectedSem("");
+            }}
+            disabled={!selectedDegree}
+            className="w-full px-3 py-2 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-indigo-500 outline-none"
+          >
+            <option value="">Batch...</option>
+            {batches.filter((b) => b.degree === selectedDegree).map((b) => (
+                <option key={b.batchId} value={b.batchId}>{b.branch} ({b.batchYears})</option>
+            ))}
+          </select>
 
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Department
-            </label>
-            <select
-              value={selectedDept}
-              onChange={(e) => {
-                setSelectedDept(e.target.value);
-                setSelectedSem("");
-              }}
-              disabled={!selectedBatch}
-              className="w-full px-3 py-2 border rounded-lg"
-            >
-              <option value="">Select Department</option>
-              {departments
-                .filter((dept) =>
-                  batches.some(
-                    (b) =>
-                      b.degree === selectedDegree &&
-                      b.batchId === +selectedBatch &&
-                      b.branch.toUpperCase() ===
-                        dept.departmentCode.toUpperCase()
-                  )
+          <select
+            value={selectedDept}
+            onChange={(e) => {
+              setSelectedDept(e.target.value);
+              setSelectedSem("");
+            }}
+            disabled={!selectedBatch}
+            className="w-full px-3 py-2 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-indigo-500 outline-none"
+          >
+            <option value="">Department...</option>
+            {departments
+              .filter((dept) =>
+                batches.some(
+                  (b) =>
+                    b.degree === selectedDegree &&
+                    b.batchId === +selectedBatch &&
+                    b.branch.toUpperCase() ===
+                      dept.departmentCode.toUpperCase()
                 )
-                .map((dept) => (
-                  <option key={dept.departmentId} value={dept.departmentId}>
-                    {dept.departmentName} ({dept.departmentCode})
-                  </option>
-                ))}
-            </select>
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Semester
-            </label>
-            <select
-              value={selectedSem}
-              onChange={(e) => setSelectedSem(e.target.value)}
-              disabled={!selectedDept}
-              className="w-full px-3 py-2 border rounded-lg"
-            >
-              <option value="">Select Semester</option>
-              {semesters.map((sem) => (
-                <option key={sem.semesterId} value={sem.semesterId}>
-                  Semester {sem.semesterNumber}
+              )
+              .map((dept) => (
+                <option key={dept.departmentId} value={dept.departmentId}>
+                  {dept.departmentCode}
                 </option>
               ))}
-            </select>
-          </div>
+          </select>
+
+          <select
+            value={selectedSem}
+            onChange={(e) => setSelectedSem(e.target.value)}
+            disabled={!selectedDept}
+            className="w-full px-3 py-2 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-indigo-500 outline-none"
+          >
+            <option value="">Semester...</option>
+            {semesters.map((sem) => (
+              <option key={sem.semesterId} value={sem.semesterId}>Sem {sem.semesterNumber}</option>
+            ))}
+          </select>
         </div>
       </div>
 
-      {/* Timetable Grid */}
+      {/* Timetable Display */}
       {selectedSem ? (
-        <div className="bg-white rounded-xl shadow overflow-hidden">
-          <div className="p-6 border-b flex justify-between items-center">
-            <h2 className="text-2xl font-bold">
-              {departments.find((d) => d.departmentId === +selectedDept)
-                ?.departmentName || "Dept"}{" "}
-              - Semester{" "}
-              {
-                semesters.find((s) => s.semesterId === +selectedSem)
-                  ?.semesterNumber
-              }
+        <div className="bg-white rounded-lg shadow-lg border border-gray-200 overflow-hidden">
+          <div className="bg-gray-50 px-4 py-2 border-b border-gray-200 flex justify-between items-center">
+            <h2 className="text-sm font-bold text-gray-700 uppercase tracking-wider">
+              {departments.find((d) => d.departmentId === +selectedDept)?.departmentCode} - 
+              Sem {semesters.find((s) => s.semesterId === +selectedSem)?.semesterNumber}
             </h2>
-            <div className="text-sm text-gray-500">
-              {timetableData.length} allocated slots
+            <div className="text-xs text-gray-500 font-mono">
+              {timetableData.length} slots allocated
             </div>
           </div>
-          <div className="overflow-x-auto">
-            <div className="grid grid-cols-[140px_repeat(11,minmax(140px,1fr))] min-w-[1600px]">
-              <div className="sticky top-0 left-0 bg-gray-100 z-30 p-4 font-bold border-r border-b">
-                Day/Period
+          
+          {/* THE GRID: Removed overflow-x-auto, changed grid definition */}
+          <div className="w-full">
+            <div className="grid grid-cols-[60px_repeat(11,1fr)] w-full border-collapse">
+              
+              {/* Top-Left Corner */}
+              <div className="bg-gray-100 border-r border-b p-2 flex items-center justify-center font-bold text-gray-400 text-[10px]">
+                DAY
               </div>
+
+              {/* Period Headers */}
               {periods.map((p) => (
-                <div
-                  key={p.id}
-                  className="sticky top-0 bg-gray-50 z-20 border-b border-r"
-                >
+                <div key={p.id} className="border-r border-b bg-gray-50">
                   {renderPeriodHeader(p)}
                 </div>
               ))}
+              
+              {/* Rows */}
               {days.map((day) => (
                 <React.Fragment key={day}>
-                  <div className="sticky left-0 bg-gray-100 z-20 p-4 font-bold border-r border-b">
+                  {/* Day Label */}
+                  <div className="bg-gray-100 border-r border-b flex items-center justify-center font-bold text-gray-700 text-xs writing-mode-vertical">
                     {day}
                   </div>
+                  
+                  {/* Period Cells */}
                   {periods.map((p) => (
-                    <div key={`${day}-${p.id}`} className="border-b border-r">
+                    <div key={`${day}-${p.id}`} className="border-r border-b min-w-0">
                       {renderCell(day, p)}
                     </div>
                   ))}
@@ -609,157 +551,119 @@ const Timetable = () => {
           </div>
         </div>
       ) : (
-        <div className="text-center py-20 bg-white rounded-xl shadow">
-          <Filter className="w-20 h-20 text-gray-300 mx-auto mb-6" />
-          <h3 className="text-2xl font-bold">
-            Select filters to load timetable
-          </h3>
+        <div className="flex flex-col items-center justify-center py-20 text-gray-400">
+          <Filter className="w-16 h-16 mb-4 opacity-20" />
+          <p className="text-lg">Select filters to view timetable</p>
         </div>
       )}
 
-      {/* Modal */}
+      {/* Modal - Unchanged logic, just ensure it renders above everything */}
       {showCourseModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl m-4 p-8">
-            <div className="flex justify-between items-center mb-6">
-              <h2 className="text-3xl font-bold text-indigo-900">
-                Assign Course
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6 animate-in fade-in zoom-in duration-200">
+            <div className="flex justify-between items-center mb-6 border-b pb-4">
+              <h2 className="text-xl font-bold text-gray-900">
+                Assign Slot
               </h2>
-              <button onClick={() => setShowCourseModal(false)}>
-                <X className="w-7 h-7 text-gray-500 hover:text-gray-700" />
+              <button onClick={() => setShowCourseModal(false)} className="p-1 hover:bg-gray-100 rounded-full">
+                <X className="w-5 h-5 text-gray-500" />
               </button>
             </div>
 
-            <p className="text-lg text-gray-700 mb-8">
-              Assigning:{" "}
-              <strong>
-                {selectedCell?.day} •{" "}
-                {periods.find((p) => p.id === selectedCell?.periodId)?.name}
-              </strong>
-            </p>
+            <div className="mb-6 bg-indigo-50 p-3 rounded-lg border border-indigo-100 text-center">
+              <div className="text-xs text-indigo-500 uppercase font-bold tracking-wider mb-1">Target Slot</div>
+              <div className="text-lg font-bold text-indigo-900">
+                {selectedCell?.day} • {periods.find((p) => p.id === selectedCell?.periodId)?.name}
+              </div>
+            </div>
 
-            <div className="space-y-6">
-              <select
-                value={allocationMode}
-                onChange={(e) => {
-                  setAllocationMode(e.target.value);
-                  setCustomCourseInput("");
-                  setSelectedBucketId("");
-                }}
-                className="w-full p-4 text-base border-2 border-gray-300 rounded-lg"
-              >
-                <option value="">Choose assignment method...</option>
-                <option value="select">Regular Course</option>
-                <option value="manual">Manual / Activity</option>
-                <option value="bucket">
-                  Elective Bucket (All Courses in Bucket)
-                </option>
-              </select>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-gray-500 mb-1 uppercase">Allocation Type</label>
+                <select
+                  value={allocationMode}
+                  onChange={(e) => {
+                    setAllocationMode(e.target.value);
+                    setCustomCourseInput("");
+                    setSelectedBucketId("");
+                  }}
+                  className="w-full p-2.5 bg-white border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-sm"
+                >
+                  <option value="">Select Type...</option>
+                  <option value="select">Regular Course</option>
+                  <option value="manual">Manual Entry</option>
+                  <option value="bucket">Elective Bucket</option>
+                </select>
+              </div>
 
               {allocationMode === "select" && (
-                <select
-                  value={customCourseInput}
-                  onChange={(e) => setCustomCourseInput(e.target.value)}
-                  className="w-full p-4 border-2 border-gray-300 rounded-lg"
-                >
-                  <option value="">Select a course...</option>
-                  {courses.map((c) => (
-                    <option key={c.courseId} value={c.courseId}>
-                      {c.courseCode} - {c.courseTitle}
-                    </option>
-                  ))}
-                </select>
+                <div>
+                   <label className="block text-xs font-bold text-gray-500 mb-1 uppercase">Select Course</label>
+                   <select
+                    value={customCourseInput}
+                    onChange={(e) => setCustomCourseInput(e.target.value)}
+                    className="w-full p-2.5 bg-white border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-sm"
+                  >
+                    <option value="">Choose Course...</option>
+                    {courses.map((c) => (
+                      <option key={c.courseId} value={c.courseId}>
+                        {c.courseCode} - {c.courseTitle}
+                      </option>
+                    ))}
+                  </select>
+                </div>
               )}
 
               {allocationMode === "manual" && (
-                <input
-                  type="text"
-                  placeholder="e.g., Project Review, Guest Lecture"
-                  value={customCourseInput}
-                  onChange={(e) => setCustomCourseInput(e.target.value)}
-                  className="w-full p-4 border-2 border-gray-300 rounded-lg"
-                />
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 mb-1 uppercase">Activity Name</label>
+                  <input
+                    type="text"
+                    placeholder="e.g., Library, Seminar"
+                    value={customCourseInput}
+                    onChange={(e) => setCustomCourseInput(e.target.value)}
+                    className="w-full p-2.5 bg-white border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-sm"
+                  />
+                </div>
               )}
 
               {allocationMode === "bucket" && (
-                <select
-                  value={selectedBucketId}
-                  onChange={(e) => setSelectedBucketId(e.target.value)}
-                  className="w-full p-4 border-2 border-gray-300 rounded-lg"
-                >
-                  <option value="">Select a bucket...</option>
-                  {electiveBuckets.map((b) => {
-                    const count = bucketCourses.filter(
-                      (c) => c.bucketId === b.bucketId
-                    ).length;
-                    return (
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 mb-1 uppercase">Select Bucket</label>
+                  <select
+                    value={selectedBucketId}
+                    onChange={(e) => setSelectedBucketId(e.target.value)}
+                    className="w-full p-2.5 bg-white border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-sm"
+                  >
+                    <option value="">Choose Bucket...</option>
+                    {electiveBuckets.map((b) => (
                       <option key={b.bucketId} value={b.bucketId}>
-                        {b.bucketName || `Bucket ${b.bucketNumber}`} ({count}{" "}
-                        courses)
+                        {b.bucketName || `Bucket ${b.bucketNumber}`}
                       </option>
-                    );
-                  })}
-                </select>
+                    ))}
+                  </select>
+                </div>
               )}
             </div>
 
-            <div className="mt-8 space-y-3">
-              {(allocationMode === "select" || allocationMode === "manual") &&
-                customCourseInput && (
+            <div className="mt-8">
+              {(allocationMode === "select" || allocationMode === "manual") && customCourseInput && (
                   <button
                     onClick={() => handleCourseAssign(customCourseInput)}
-                    className="w-full py-4 bg-green-600 hover:bg-green-700 text-white font-bold text-xl rounded-lg"
+                    className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg shadow-lg shadow-indigo-200 transition-all"
                   >
-                    Confirm Assignment
+                    Confirm Allocation
                   </button>
                 )}
 
               {allocationMode === "bucket" && selectedBucketId && (
                 <button
                   onClick={handleAssignBucket}
-                  className="w-full py-4 bg-purple-600 hover:bg-purple-700 text-white font-bold text-xl rounded-lg"
+                  className="w-full py-3 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-lg shadow-lg shadow-purple-200 transition-all"
                 >
-                  Assign All Courses in Selected Bucket
+                  Assign Bucket
                 </button>
               )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Courses Panel */}
-      {selectedSem && (
-        <div className="mt-10 bg-white rounded-xl shadow p-6">
-          <h3 className="text-2xl font-bold mb-6">Courses & Buckets</h3>
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-            <div>
-              <h4 className="text-xl font-bold mb-4">Regular Courses</h4>
-              {courses.map((c) => (
-                <div key={c.courseId} className="p-4 border rounded-lg mb-3">
-                  <strong>{c.courseCode}</strong> - {c.courseTitle}
-                  <div className="text-sm text-gray-500 mt-1">
-                    Type: {c.type} | Credits: {c.credits}
-                  </div>
-                </div>
-              ))}
-            </div>
-            <div>
-              <h4 className="text-xl font-bold mb-4">Elective Buckets</h4>
-              {electiveBuckets.map((b) => (
-                <div
-                  key={b.bucketId}
-                  className="p-4 border rounded-lg mb-3 bg-purple-50"
-                >
-                  <strong>{b.bucketName || `Bucket ${b.bucketNumber}`}</strong>
-                  <p className="text-sm text-gray-600">
-                    {
-                      bucketCourses.filter((c) => c.bucketId === b.bucketId)
-                        .length
-                    }{" "}
-                    courses
-                  </p>
-                </div>
-              ))}
             </div>
           </div>
         </div>

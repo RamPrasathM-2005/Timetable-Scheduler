@@ -42,6 +42,8 @@ const AdminSidebar = () => {
     { to: "/admin/manage-courses", icon: Library, label: "Manage Courses" },
     { to: "/admin/manage-staff", icon: UserCheck, label: "Allocate Staff to Course" },
     { to: "/admin/timetable", icon: CalendarClock, label: "Timetable" },
+    { to: "/admin/labtimetable", icon: CalendarClock, label: "Lab Timetable"},
+    { to: "/admin/labcreation", icon: CalendarClock, label: "Lab Creation"},
     { to: "/admin/course-recommendation", icon: Sparkles, label: "Course Recommendation" },
   ];
 
