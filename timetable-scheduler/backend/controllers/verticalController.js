@@ -155,15 +155,22 @@ export const allocateTimetableSlot = async (req, res) => {
   }
 
   try {
-    // Clear existing entries for this day + period
-    await pool.execute(
-      `DELETE FROM Timetable 
-       WHERE semesterId = ? 
-         AND Deptid = ? 
-         AND dayOfWeek = ? 
-         AND periodNumber = ?`,
+    // Do NOT overwrite existing allocations for this slot.
+    const [existingRows] = await pool.execute(
+      `SELECT timetableId FROM Timetable
+       WHERE semesterId = ?
+         AND Deptid = ?
+         AND dayOfWeek = ?
+         AND periodNumber = ?
+         AND isActive = 'YES'`,
       [semesterId, Deptid, dayOfWeek.toUpperCase(), periodNumber]
     );
+    if (existingRows.length > 0) {
+      return res.status(409).json({
+        status: "error",
+        message: "Slot already allocated. Please clear it manually before reallocating.",
+      });
+    }
 
     const insertions = [];
 

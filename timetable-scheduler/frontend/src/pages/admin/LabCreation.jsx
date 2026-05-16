@@ -45,7 +45,7 @@ const LabCreation = () => {
   const fetchLabs = async () => {
     if (!selectedDept) return;
     try {
-      const res = await api.get(`/labs/department/${selectedDept}`);
+      const res = await api.get(`/labs/${selectedDept}`);
       setLabs(res.data);
     } catch (err) {
       console.error(err);

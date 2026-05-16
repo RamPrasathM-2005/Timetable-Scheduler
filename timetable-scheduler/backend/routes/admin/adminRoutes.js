@@ -53,6 +53,7 @@ import {
   updateTimetableEntry,
   deleteTimetableEntry,
   getTimetableByFilters,
+  getTimetableByStaff,
   getElectiveBucketsBySemester,
   getCoursesInBucket,
   autoGenerateTimetable,
@@ -148,6 +149,7 @@ router.get("/timetable/batches", protect, getAllTimetableBatches);
 router.get("/timetable/departments", protect, getAllTimetableDepartments);
 router.post('/timetable/generate/:semesterId', protect, autoGenerateTimetable);
 router.get("/timetable/by-filters", protect, getTimetableByFilters);
+router.get("/timetable/staff/:staffId", protect, getTimetableByStaff);
 
 // General Timetable CRUD
 router.get("/timetable/semester/:semesterId", protect, getTimetable);

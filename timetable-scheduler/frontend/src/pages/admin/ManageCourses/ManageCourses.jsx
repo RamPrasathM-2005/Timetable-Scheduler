@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, BookOpen, Upload } from 'lucide-react';
+import { Plus, BookOpen, Upload, Download } from 'lucide-react';
 import { toast } from 'react-toastify';
 import { ClipLoader } from 'react-spinners'; // Import the spinner
 import { api } from '../../../services/authService';
@@ -474,6 +474,73 @@ const ManageCourses = () => {
 
   const displayCourses = Object.keys(filters).some(key => filters[key]) ? filteredCourses : courses;
 
+  const normalizeBatchName = (name) => (name || '').replace('BatchBatch', 'Batch').trim();
+
+  const getBatchSortKey = (name) => {
+    const match = String(name).match(/\d+/);
+    const number = match ? parseInt(match[0], 10) : Number.MAX_SAFE_INTEGER;
+    return { number, name: String(name).toLowerCase() };
+  };
+
+  const buildExportRows = (exportCourses) => {
+    let maxBatches = 0;
+    const courseBatchNames = exportCourses.map(course => {
+      const batches = sections[String(course.courseId)] || {};
+      const names = Object.keys(batches).map(normalizeBatchName).filter(Boolean);
+      names.sort((a, b) => {
+        const ak = getBatchSortKey(a);
+        const bk = getBatchSortKey(b);
+        if (ak.number !== bk.number) return ak.number - bk.number;
+        return ak.name.localeCompare(bk.name);
+      });
+      if (names.length > maxBatches) maxBatches = names.length;
+      return { courseId: course.courseId, names };
+    });
+
+    const headers = ['Course Code', 'Course Name'];
+    for (let i = 1; i <= maxBatches; i += 1) headers.push(`Batch ${i}`);
+
+    const rows = exportCourses.map(course => {
+      const batches = sections[String(course.courseId)] || {};
+      const { names } = courseBatchNames.find(c => c.courseId === course.courseId) || { names: [] };
+      const row = [course.courseCode, course.courseTitle];
+
+      for (let i = 0; i < maxBatches; i += 1) {
+        const batchName = names[i];
+        if (!batchName) {
+          row.push('');
+          continue;
+        }
+        const staffList = (batches[batchName] || [])
+          .map(s => s.staffName || s.name || '')
+          .filter(Boolean);
+        row.push(staffList.join(', '));
+      }
+      return row;
+    });
+
+    return { headers, rows };
+  };
+
+  const handleExport = (format) => {
+    const exportCourses = displayCourses;
+    if (!exportCourses.length) {
+      toast.warn('No courses to export for the selected filters');
+      return;
+    }
+
+    const { headers, rows } = buildExportRows(exportCourses);
+    const worksheet = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Courses');
+
+    const dateStamp = new Date().toISOString().slice(0, 10);
+    const fileExt = format === 'csv' ? 'csv' : 'xlsx';
+    const filename = `courses_${dateStamp}.${fileExt}`;
+    XLSX.writeFile(workbook, filename, { bookType: fileExt });
+    toast.success(`Exported ${rows.length} courses`);
+  };
+
   return (
     <div className="p-6 bg-gray-50 min-h-screen flex flex-col items-center" key={updateKey}>
       <div className="w-full max-w-7xl mb-6">
@@ -498,6 +565,20 @@ const ManageCourses = () => {
             >
               <Upload size={20} />
               Import
+            </button>
+            <button
+              onClick={() => handleExport('xlsx')}
+              className="bg-gradient-to-r from-amber-600 to-amber-700 hover:from-amber-700 hover:to-amber-800 text-white px-6 py-3 rounded-xl flex items-center gap-2 transition-all duration-200 transform hover:scale-[1.02] hover:shadow-lg font-semibold"
+            >
+              <Download size={20} />
+              Export Excel
+            </button>
+            <button
+              onClick={() => handleExport('csv')}
+              className="bg-white border border-amber-200 hover:border-amber-300 text-amber-700 px-6 py-3 rounded-xl flex items-center gap-2 transition-all duration-200 transform hover:scale-[1.02] hover:shadow-lg font-semibold"
+            >
+              <Download size={20} />
+              Export CSV
             </button>
           </div>
         </div>

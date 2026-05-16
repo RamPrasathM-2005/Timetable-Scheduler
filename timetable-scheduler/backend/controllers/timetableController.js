@@ -128,15 +128,25 @@ export const getTimetable = catchAsync(async (req, res) => {
              COALESCE(t.sectionId, 0) AS sectionId, 
              UPPER(COALESCE(t.dayOfWeek, '')) AS dayOfWeek, 
              t.periodNumber, 
+             COALESCE(c.courseCode, '') AS courseCode,
              COALESCE(c.courseTitle, c.courseId) AS courseTitle, 
-             COALESCE(s.sectionName, 'No Section') AS sectionName
+             COALESCE(s.sectionName, 'No Section') AS sectionName,
+             COALESCE(
+               NULLIF(GROUP_CONCAT(DISTINCT u.username SEPARATOR ' / '), ''),
+               MAX(u_created.username),
+               'Unassigned'
+             ) AS staffNames
       FROM Timetable t
       LEFT JOIN Course c ON t.courseId = c.courseId AND c.isActive = "YES"
       LEFT JOIN Section s ON t.sectionId = s.sectionId AND (s.isActive = "YES" OR s.isActive IS NULL)
+      LEFT JOIN StaffCourse sc ON sc.courseId = t.courseId
+      LEFT JOIN users u ON sc.Userid = u.Userid AND u.status = "active"
+      LEFT JOIN users u_created ON t.createdBy = u_created.email
       WHERE t.semesterId = ? 
         AND t.isActive = "YES" 
         AND (t.dayOfWeek IN ('MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT') OR t.dayOfWeek IS NULL)
         AND (t.periodNumber BETWEEN 1 AND 8 OR t.periodNumber IS NULL)
+      GROUP BY t.timetableId, c.courseId, t.sectionId, t.dayOfWeek, t.periodNumber, c.courseCode, c.courseTitle, s.sectionName
       `,
       [semesterId]
     );
@@ -247,6 +257,91 @@ export const getTimetableByFilters = catchAsync(async (req, res) => {
     res.status(error.message.includes('No active user') || error.message.includes('Invalid') || error.message.includes('No department') ? 400 : 500).json({
       status: 'failure',
       message: `Failed to fetch timetable by filters: ${error.message}`,
+      data: [],
+    });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+export const getTimetableByStaff = catchAsync(async (req, res) => {
+  const { staffId } = req.params;
+  const userEmail = req.user?.email || 'admin';
+  let connection;
+
+  try {
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
+
+    // Validate user
+    const [userCheck] = await connection.execute(
+      'SELECT Userid FROM users WHERE Email = ? AND status = "active"',
+      [userEmail]
+    );
+    if (userCheck.length === 0) {
+      throw new Error(`No active user found with email ${userEmail}`);
+    }
+
+    if (!staffId || isNaN(staffId) || Number(staffId) <= 0) {
+      throw new Error('Invalid staffId');
+    }
+
+    const [staffRows] = await connection.execute(
+      "SELECT Userid FROM users WHERE Userid = ? AND role = 'Staff' AND status = 'active'",
+      [staffId]
+    );
+    if (staffRows.length === 0) {
+      return res.status(404).json({
+        status: 'failure',
+        message: `No
+        
+        
+        
+        active staff found with Userid ${staffId}`,
+        data: [],
+      });
+      
+    }
+
+    const [rows] = await connection.execute(
+      `
+      SELECT 
+        t.timetableId,
+        t.dayOfWeek,
+        t.periodNumber,
+        t.courseId,
+        t.sectionId,
+        t.semesterId,
+        t.Deptid,
+        COALESCE(c.courseCode, '') AS courseCode,
+        COALESCE(c.courseTitle, c.courseId) AS courseTitle,
+        COALESCE(s.sectionName, 'No Section') AS sectionName
+      FROM Timetable t
+      INNER JOIN StaffCourse sc 
+        ON sc.courseId = t.courseId 
+        AND sc.Userid = ?
+        AND (sc.sectionId = t.sectionId OR t.sectionId IS NULL)
+      LEFT JOIN Course c ON t.courseId = c.courseId AND c.isActive = 'YES'
+      LEFT JOIN Section s ON t.sectionId = s.sectionId AND (s.isActive = 'YES' OR s.isActive IS NULL)
+      WHERE t.isActive = 'YES'
+        AND (t.dayOfWeek IN ('MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT') OR t.dayOfWeek IS NULL)
+        AND (t.periodNumber BETWEEN 1 AND 8 OR t.periodNumber IS NULL)
+      ORDER BY FIELD(t.dayOfWeek, 'MON','TUE','WED','THU','FRI','SAT'), t.periodNumber
+      `,
+      [staffId]
+    );
+
+    await connection.commit();
+    res.status(200).json({
+      status: 'success',
+      data: rows || [],
+    });
+  } catch (error) {
+    if (connection) await connection.rollback();
+    console.error('Error fetching timetable by staff:', error);
+    res.status(error.message.includes('No active user') || error.message.includes('Invalid staffId') ? 400 : 500).json({
+      status: 'failure',
+      message: `Failed to fetch timetable by staff: ${error.message}`,
       data: [],
     });
   } finally {
@@ -649,10 +744,6 @@ export const getCoursesInBucket = async (req, res) => {
   }
 };
 
-
-
-
-
 // Add these to your TimetableController.js
 
 // 1. Get Timetable specifically for a Lab Room
@@ -699,6 +790,19 @@ export const allocateMultiLabSession = async (req, res) => {
         throw new Error(`Lab ID ${alloc.labId} is already occupied.`);
       }
 
+      // B. Do not overwrite existing semester allocations for this slot
+      let slotQuery = `SELECT timetableId FROM Timetable
+        WHERE semesterId = ? AND dayOfWeek = ? AND periodNumber = ? AND isActive = 'YES'`;
+      const slotParams = [semesterId, day, period];
+      if (alloc.sectionId) {
+        slotQuery += ` AND (sectionId = ? OR sectionId IS NULL)`;
+        slotParams.push(alloc.sectionId);
+      }
+      const [slotConflict] = await connection.execute(slotQuery, slotParams);
+      if (slotConflict.length > 0) {
+        throw new Error(`Conflict: Slot already allocated for this semester/section. Please clear it manually before reallocating.`);
+      }
+
       // B. Insert Allocation
       await connection.execute(
         `INSERT INTO Timetable 
@@ -712,7 +816,8 @@ export const allocateMultiLabSession = async (req, res) => {
     res.status(201).json({ message: "Multi-Lab Allocation Successful" });
   } catch (error) {
     if (connection) await connection.rollback();
-    res.status(400).json({ message: error.message });
+    const status = String(error.message || '').startsWith('Conflict:') ? 409 : 400;
+    res.status(status).json({ message: error.message });
   } finally {
     if (connection) connection.release();
   }
@@ -770,18 +875,19 @@ export const allocateLabSession = async (req, res) => {
       throw new Error(`Conflict: Lab room is already occupied by ${labConflict[0].courseCode} (Sem ${labConflict[0].semesterNumber})`);
     }
 
-    // 2. STUDENT/SECTION CONFLICT CHECK
-    // Remove existing class for this specific Section (or whole semester if no section defined) at this time.
-    let deleteQuery = `DELETE FROM Timetable WHERE semesterId = ? AND dayOfWeek = ? AND periodNumber = ?`;
-    let deleteParams = [semesterId, day, period];
+    // 2. STUDENT/SECTION CONFLICT CHECK (do not overwrite existing allocations)
+    let conflictQuery = `SELECT timetableId FROM Timetable WHERE semesterId = ? AND dayOfWeek = ? AND periodNumber = ? AND isActive = 'YES'`;
+    const conflictParams = [semesterId, day, period];
 
     if (sectionId) {
-      deleteQuery += ` AND (sectionId = ? OR sectionId IS NULL)`; // Overwrite section-specific or common classes
-      deleteParams.push(sectionId);
-    } 
-    // If no sectionId is provided, it assumes a common class and overwrites everything for that Sem/Day/Period (Original logic)
+      conflictQuery += ` AND (sectionId = ? OR sectionId IS NULL)`;
+      conflictParams.push(sectionId);
+    }
 
-    await connection.execute(deleteQuery, deleteParams);
+    const [slotConflict] = await connection.execute(conflictQuery, conflictParams);
+    if (slotConflict.length > 0) {
+      throw new Error(`Conflict: Slot already allocated for this semester/section. Please clear it manually before reallocating.`);
+    }
 
     // 3. INSERT ALLOCATION
     const [result] = await connection.execute(
@@ -801,13 +907,12 @@ export const allocateLabSession = async (req, res) => {
   } catch (error) {
     if (connection) await connection.rollback();
     console.error("Lab Allocation Error:", error);
-    res.status(500).json({ message: error.message || "Failed to allocate lab session" });
+    const status = String(error.message || '').startsWith('Conflict:') ? 409 : 500;
+    res.status(status).json({ message: error.message || "Failed to allocate lab session" });
   } finally {
     if (connection) connection.release();
   }
 };
-
-
 
 const normalizeSeed = (seedInput) => {
   if (seedInput === null || seedInput === undefined || seedInput === '') return `${Date.now()}`;
@@ -851,6 +956,7 @@ export const autoGenerateTimetable = async (req, res) => {
   const userEmail = req.user?.email || 'admin';
   const requestedMode = String(req.body?.mode || req.query?.mode || 'heuristic').toLowerCase();
   const seedInput = req.body?.seed ?? req.query?.seed ?? null;
+  const ignoreGlobalLabBusy = String(req.body?.ignoreGlobalLabBusy ?? req.query?.ignoreGlobalLabBusy ?? 'false').toLowerCase() === 'true';
   const backtrackDepth = clampInt(req.body?.backtrackDepth ?? req.query?.backtrackDepth, 1, 15, 3);
   const maxBacktrackAttempts = clampInt(req.body?.maxBacktrackAttempts ?? req.query?.maxBacktrackAttempts, 0, 200, 30);
   const exactMaxNodes = clampInt(req.body?.exactMaxNodes ?? req.query?.exactMaxNodes, 1000, 250000, 30000);
@@ -879,7 +985,7 @@ export const autoGenerateTimetable = async (req, res) => {
 
     const [coursesRaw] = await connection.execute(
       `SELECT
-         c.courseId, c.courseCode, c.courseTitle, c.credits,
+         c.courseId, c.courseCode, c.courseTitle, c.type, c.credits,
          c.lectureHours, c.tutorialHours, c.practicalHours, c.experientialHours,
          (SELECT sc.Userid FROM StaffCourse sc WHERE sc.courseId = c.courseId LIMIT 1) as mainStaffId
        FROM Course c
@@ -899,7 +1005,7 @@ export const autoGenerateTimetable = async (req, res) => {
     });
 
     const courseIds = courses.map((c) => c.courseId);
-    const sectionMap = {};vi
+    const sectionMap = {};
     if (courseIds.length > 0) {
       const [sections] = await connection.query(
         `SELECT sectionId, courseId, sectionName FROM Section WHERE courseId IN (?) AND isActive='YES'`,
@@ -917,10 +1023,19 @@ export const autoGenerateTimetable = async (req, res) => {
     );
 
     const staffMap = {};
-    courses.forEach((c) => {
-      if (c.staffId) staffMap[c.courseId] = c.staffId;
-    });
-    const allStaffIds = [...new Set(Object.values(staffMap))];
+    const allStaffIdsSet = new Set();
+    if (courseIds.length > 0) {
+      const [staffRows] = await connection.query(
+        `SELECT courseId, Userid FROM StaffCourse WHERE courseId IN (?)`,
+        [courseIds]
+      );
+      staffRows.forEach((r) => {
+        if (!staffMap[r.courseId]) staffMap[r.courseId] = new Set();
+        staffMap[r.courseId].add(r.Userid);
+        allStaffIdsSet.add(r.Userid);
+      });
+    }
+    const allStaffIds = [...allStaffIdsSet];
 
     const globalStaffBusy = {};
     if (allStaffIds.length > 0) {
@@ -938,7 +1053,7 @@ export const autoGenerateTimetable = async (req, res) => {
     }
 
     const globalLabBusy = {};
-    if (labRooms.length > 0) {
+    if (!ignoreGlobalLabBusy && labRooms.length > 0) {
       const [busyLabs] = await connection.query(
         `SELECT dayOfWeek, periodNumber, labId FROM Timetable
          WHERE labId IS NOT NULL AND isActive='YES' AND semesterId != ?`,
@@ -950,24 +1065,28 @@ export const autoGenerateTimetable = async (req, res) => {
       });
     }
 
-    // Preserve existing semester allocations (treated as locked/manual slots).
-    const [existingSemesterRows] = await connection.execute(
-      `SELECT dayOfWeek, periodNumber, courseId, sectionId, labId
-       FROM Timetable
-       WHERE semesterId = ? AND isActive = 'YES'`,
+    // Auto-gen rebuilds the semester timetable from scratch on each run.
+    // Keeping old rows as locked slots causes previous bad generations to persist.
+    await connection.execute(
+      `DELETE FROM Timetable WHERE semesterId = ?`,
       [semesterId]
     );
+    const existingSemesterRows = [];
 
     const days = ['MON', 'TUE', 'WED', 'THU', 'FRI'];
     const periods = [1, 2, 3, 4, 5, 6, 7, 8];
     const priorityGroups = [
       [2, 3, 4],
+      [5, 6],
       [7, 8],
     ];
-    const theoryPriorityPeriods = [2, 3, 4, 7, 8];
+    const theoryPriorityPeriods = [2, 3, 4, 5, 6, 7, 8];
+    // Preferred lab blocks, but allow early blocks if late ones aren't possible.
     const strictLabBlocks = [
       [5, 6],
       [7, 8],
+      [1, 2],
+      [3, 4],
     ];
     const dayIndex = { MON: 1, TUE: 2, WED: 3, THU: 4, FRI: 5 };
 
@@ -984,6 +1103,10 @@ export const autoGenerateTimetable = async (req, res) => {
     const dailyCourseCounts = {};
     const labDays = {};
     const integratedCourseMap = {};
+    const courseGroupMap = {};
+    const groupTheoryDayCounts = {};
+    const groupLabDayCounts = {};
+    const groupHourProfile = {};
     const coursePeriodUsage = {};
     const generatedAllocations = [];
     const theoryStack = [];
@@ -995,6 +1118,7 @@ export const autoGenerateTimetable = async (req, res) => {
       modeRequested: requestedMode,
       modeExecuted: mode,
       seedUsed,
+      ignoreGlobalLabBusy,
       totalSlots: days.length * periods.length,
       filledSlots: 0,
       theorySlotsFilled: 0,
@@ -1016,21 +1140,50 @@ export const autoGenerateTimetable = async (req, res) => {
       exactStoppedByLimit: false,
       exactSolved: false,
       exactFallbackUsed: false,
+      relaxedPassUsed: false,
+      relaxedTheorySlots: 0,
+      relaxedLabSlots: 0,
+      criticalTheorySlots: 0,
+      ultraRelaxedTheorySlots: 0,
+      ultraRelaxedLabSlots: 0,
       unallocatedTheoryHours: 0,
       unallocatedLabHours: 0,
       generationMs: 0,
+      labBlockRejections: {
+        slotOccupied: 0,
+        staffBusy: 0,
+        staffConsecutive: 0,
+        noLabs: 0,
+      },
     };
 
     courses.forEach((c) => {
+      const groupKey = String(c.courseTitle || c.courseCode || c.courseId || '')
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, ' ');
       pendingTheory[c.courseId] = Number(c.lectureHours || 0) + Number(c.tutorialHours || 0);
       pendingLab[c.courseId] = Number(c.practicalHours || 0) + Number(c.experientialHours || 0);
-      integratedCourseMap[c.courseId] = pendingTheory[c.courseId] > 0 && pendingLab[c.courseId] > 0;
+      courseGroupMap[c.courseId] = groupKey;
+      if (!groupTheoryDayCounts[groupKey]) groupTheoryDayCounts[groupKey] = {};
+      if (!groupLabDayCounts[groupKey]) groupLabDayCounts[groupKey] = {};
+      if (!groupHourProfile[groupKey]) groupHourProfile[groupKey] = { theory: 0, lab: 0 };
+      groupHourProfile[groupKey].theory += pendingTheory[c.courseId];
+      groupHourProfile[groupKey].lab += pendingLab[c.courseId];
       dailyCourseCounts[c.courseId] = {};
       days.forEach((d) => {
         dailyCourseCounts[c.courseId][d] = 0;
+        groupTheoryDayCounts[groupKey][d] = groupTheoryDayCounts[groupKey][d] || 0;
+        groupLabDayCounts[groupKey][d] = groupLabDayCounts[groupKey][d] || 0;
       });
       labDays[c.courseId] = new Set();
       coursePeriodUsage[c.courseId] = new Set();
+    });
+    courses.forEach((c) => {
+      const groupKey = courseGroupMap[c.courseId];
+      integratedCourseMap[c.courseId] =
+        (groupHourProfile[groupKey]?.theory || 0) > 0 &&
+        (groupHourProfile[groupKey]?.lab || 0) > 0;
     });
 
     // Mark existing semester allocations into local grid before generation.
@@ -1050,9 +1203,19 @@ export const autoGenerateTimetable = async (req, res) => {
       if (row.labId) {
         lockedLabSlotKeys.add(key);
         if (labDays[row.courseId]) labDays[row.courseId].add(day);
+        const groupKey = courseGroupMap[row.courseId];
+        if (groupKey && groupLabDayCounts[groupKey]) {
+          groupLabDayCounts[groupKey][day] = (groupLabDayCounts[groupKey][day] || 0) + 1;
+        }
       } else {
         lockedTheorySlotKeys.add(key);
-        if (dailyCourseCounts[row.courseId]) dailyCourseCounts[row.courseId][day] = 1;
+        if (dailyCourseCounts[row.courseId]) {
+          dailyCourseCounts[row.courseId][day] = (dailyCourseCounts[row.courseId][day] || 0) + 1;
+        }
+        const groupKey = courseGroupMap[row.courseId];
+        if (groupKey && groupTheoryDayCounts[groupKey]) {
+          groupTheoryDayCounts[groupKey][day] = (groupTheoryDayCounts[groupKey][day] || 0) + 1;
+        }
         if (coursePeriodUsage[row.courseId]) coursePeriodUsage[row.courseId].add(period);
         if (period === 1) p1UsedCourses.add(row.courseId);
       }
@@ -1083,26 +1246,57 @@ export const autoGenerateTimetable = async (req, res) => {
       });
     });
 
-    const isStaffFree = (staffId, day, p) => {
+    const getCourseStaffIds = (courseId) => staffMap[courseId] || new Set();
+    const hasTheoryOnDay = (courseId, day) => {
+      const groupKey = courseGroupMap[courseId];
+      return ((groupTheoryDayCounts[groupKey]?.[day] || 0) > 0) || ((dailyCourseCounts[courseId]?.[day] || 0) > 0);
+    };
+    const hasLabOnDay = (courseId, day) => {
+      const groupKey = courseGroupMap[courseId];
+      return ((groupLabDayCounts[groupKey]?.[day] || 0) > 0) || (labDays[courseId]?.has(day) || false);
+    };
+
+    const isStaffFree = (staffIds, day, p) => {
       metrics.conflictChecks.staffBusy++;
-      if (!staffId) return true;
-      if (globalStaffBusy[staffId]?.[`${day}-${p}`]) return false;
-      if (timetable[day][p]) {
-        const occupiedCourseId = timetable[day][p].courseId;
-        if (staffMap[occupiedCourseId] === staffId) return false;
+      if (!staffIds || staffIds.size === 0) return true;
+      for (const staffId of staffIds) {
+        if (globalStaffBusy[staffId]?.[`${day}-${p}`]) return false;
+        if (timetable[day][p]) {
+          const occupiedCourseId = timetable[day][p].courseId;
+          const occupiedStaffIds = getCourseStaffIds(occupiedCourseId);
+          if (occupiedStaffIds.has(staffId)) return false;
+        }
       }
       return true;
     };
 
-    const isStaffFatigued = (staffId, day, p) => {
+    // Relaxed staff check: ignore other-semester conflicts, but still prevent
+    // a staff from being double-booked within this semester's grid.
+    const isStaffFreeLocal = (staffIds, day, p) => {
+      metrics.conflictChecks.staffBusy++;
+      if (!staffIds || staffIds.size === 0) return true;
+      if (timetable[day][p]) {
+        const occupiedCourseId = timetable[day][p].courseId;
+        const occupiedStaffIds = getCourseStaffIds(occupiedCourseId);
+        for (const staffId of staffIds) {
+          if (occupiedStaffIds.has(staffId)) return false;
+        }
+      }
+      return true;
+    };
+
+    const isStaffFatigued = (staffIds, day, p) => {
       metrics.conflictChecks.staffFatigue++;
-      if (!staffId) return false;
+      if (!staffIds || staffIds.size === 0) return false;
       const check = (targetP) => {
         if (targetP < 1 || targetP > 8) return false;
-        if (globalStaffBusy[staffId]?.[`${day}-${targetP}`]) return true;
-        if (timetable[day][targetP]) {
-          const cId = timetable[day][targetP].courseId;
-          if (timetable[day][targetP].type === 'THEORY' && staffMap[cId] === staffId) return true;
+        for (const staffId of staffIds) {
+          if (globalStaffBusy[staffId]?.[`${day}-${targetP}`]) return true;
+          if (timetable[day][targetP]) {
+            const cId = timetable[day][targetP].courseId;
+            const occupiedStaffIds = getCourseStaffIds(cId);
+            if (occupiedStaffIds.has(staffId)) return true;
+          }
         }
         return false;
       };
@@ -1111,11 +1305,13 @@ export const autoGenerateTimetable = async (req, res) => {
 
     const getAvailableLabs = (day, periodList, countNeeded) => {
       const foundLabs = [];
-      for (const room of labRooms) {
+      // Shuffle rooms to avoid always filling the same labs first.
+      const roomsOrder = shuffle(labRooms, rng);
+      for (const room of roomsOrder) {
         let isFree = true;
         for (const p of periodList) {
           metrics.conflictChecks.labBusy++;
-          if (globalLabBusy[room.labId]?.[`${day}-${p}`]) {
+          if (!ignoreGlobalLabBusy && globalLabBusy[room.labId]?.[`${day}-${p}`]) {
             isFree = false;
             break;
           }
@@ -1143,6 +1339,10 @@ export const autoGenerateTimetable = async (req, res) => {
       theoryStack.push({ day, period, courseId: course.courseId });
       pendingTheory[course.courseId]--;
       dailyCourseCounts[course.courseId][day]++;
+      if (courseGroupMap[course.courseId]) {
+        groupTheoryDayCounts[courseGroupMap[course.courseId]][day] =
+          (groupTheoryDayCounts[courseGroupMap[course.courseId]][day] || 0) + 1;
+      }
       coursePeriodUsage[course.courseId].add(period);
       metrics.filledSlots++;
       metrics.theorySlotsFilled++;
@@ -1155,6 +1355,12 @@ export const autoGenerateTimetable = async (req, res) => {
       timetable[day][period] = null;
       pendingTheory[courseId]++;
       dailyCourseCounts[courseId][day] = Math.max(0, dailyCourseCounts[courseId][day] - 1);
+      if (courseGroupMap[courseId]) {
+        groupTheoryDayCounts[courseGroupMap[courseId]][day] = Math.max(
+          0,
+          (groupTheoryDayCounts[courseGroupMap[courseId]][day] || 0) - 1
+        );
+      }
       generatedAllocations.pop();
       metrics.filledSlots = Math.max(0, metrics.filledSlots - 1);
       metrics.theorySlotsFilled = Math.max(0, metrics.theorySlotsFilled - 1);
@@ -1177,18 +1383,23 @@ export const autoGenerateTimetable = async (req, res) => {
       }
       pendingLab[course.courseId] -= 2;
       labDays[course.courseId].add(day);
+      if (courseGroupMap[course.courseId]) {
+        groupLabDayCounts[courseGroupMap[course.courseId]][day] =
+          (groupLabDayCounts[courseGroupMap[course.courseId]][day] || 0) + 1;
+      }
       metrics.filledSlots += 2;
       metrics.labSlotsFilled += 2;
     };
 
     const scoreTheoryCandidate = (course, day, period, tierWeight = 0, allowFatigue = true) => {
+      const staffIds = getCourseStaffIds(course.courseId);
       let score = 100;
       score += Math.min(8, course.credits || 0) * 3;
       score += Math.min(6, pendingTheory[course.courseId]) * 4;
       if (coursePeriodUsage[course.courseId].has(period)) score -= 8;
-      if (integratedCourseMap[course.courseId] && labDays[course.courseId].has(day)) score -= 40;
+      if (integratedCourseMap[course.courseId] && hasLabOnDay(course.courseId, day)) score -= 40;
       if (period === 1) score += 6;
-      if (!allowFatigue && isStaffFatigued(course.staffId, day, period)) score -= 14;
+      if (!allowFatigue && isStaffFatigued(staffIds, day, period)) score -= 14;
       score += tierWeight;
       score += rng();
       return score;
@@ -1209,10 +1420,12 @@ export const autoGenerateTimetable = async (req, res) => {
           metrics.conflictChecks.slotBusy++;
           if (timetable[day][period] !== null) continue;
           metrics.conflictChecks.dailyLimit++;
-          if (dailyCourseCounts[course.courseId][day] > 0) continue;
-          if (!isStaffFree(course.staffId, day, period)) continue;
-          if (enforceFatigue && isStaffFatigued(course.staffId, day, period)) continue;
-          if (enforceLabDayRule && integratedCourseMap[course.courseId] && labDays[course.courseId].has(day)) continue;
+          if (dailyCourseCounts[course.courseId][day] >= 2) continue;
+          if (hasTheoryOnDay(course.courseId, day)) continue;
+          const staffIds = getCourseStaffIds(course.courseId);
+          if (!isStaffFree(staffIds, day, period)) continue;
+          if (enforceFatigue && isStaffFatigued(staffIds, day, period)) continue;
+          if (enforceLabDayRule && integratedCourseMap[course.courseId] && hasLabOnDay(course.courseId, day)) continue;
 
           const tierWeight = candidatePeriods.includes(2) ? 8 : candidatePeriods.includes(7) ? 4 : 2;
           const score = scoreTheoryCandidate(course, day, period, tierWeight, !enforceFatigue);
@@ -1243,14 +1456,30 @@ export const autoGenerateTimetable = async (req, res) => {
 
             for (const day of daysToTry) {
               if (labDays[course.courseId].has(day)) continue;
+              if (integratedCourseMap[course.courseId] && hasTheoryOnDay(course.courseId, day)) continue;
               metrics.conflictChecks.slotBusy++;
-              if (timetable[day][p1] !== null || timetable[day][p2] !== null) continue;
-              if (!isStaffFree(course.staffId, day, p1) || !isStaffFree(course.staffId, day, p2)) continue;
+              if (timetable[day][p1] !== null || timetable[day][p2] !== null) {
+                metrics.labBlockRejections.slotOccupied++;
+                continue;
+              }
+              const staffIds = getCourseStaffIds(course.courseId);
+              if (!isStaffFree(staffIds, day, p1) || !isStaffFree(staffIds, day, p2)) {
+                metrics.labBlockRejections.staffBusy++;
+                continue;
+              }
+              // Hard constraint: no consecutive periods for staff, except the lab block itself.
+              if (isStaffFatigued(staffIds, day, p1) || isStaffFatigued(staffIds, day, p2)) {
+                metrics.labBlockRejections.staffConsecutive++;
+                continue;
+              }
 
               const courseSections = sectionMap[course.courseId] || [];
               const batchesNeeded = courseSections.length > 0 ? courseSections.length : 1;
               const freeLabs = getAvailableLabs(day, [p1, p2], batchesNeeded);
-              if (!freeLabs) continue;
+              if (!freeLabs) {
+                metrics.labBlockRejections.noLabs++;
+                continue;
+              }
 
               pushLabAllocation(course, day, p1, p2, freeLabs);
               allocated = true;
@@ -1271,10 +1500,12 @@ export const autoGenerateTimetable = async (req, res) => {
         let assigned = false;
         for (const course of p1Candidates) {
           if (p1UsedCourses.has(course.courseId)) continue;
-          if (dailyCourseCounts[course.courseId][day] > 0) continue;
-          if (!isStaffFree(course.staffId, day, 1)) continue;
-          if (isStaffFatigued(course.staffId, day, 1)) continue;
-          if (integratedCourseMap[course.courseId] && labDays[course.courseId].has(day)) continue;
+          if (dailyCourseCounts[course.courseId][day] >= 2) continue;
+          if (hasTheoryOnDay(course.courseId, day)) continue;
+          const staffIds = getCourseStaffIds(course.courseId);
+          if (!isStaffFree(staffIds, day, 1)) continue;
+          if (isStaffFatigued(staffIds, day, 1)) continue;
+          if (integratedCourseMap[course.courseId] && hasLabOnDay(course.courseId, day)) continue;
 
           pushTheoryAllocation(course, day, 1);
           p1UsedCourses.add(course.courseId);
@@ -1326,6 +1557,7 @@ export const autoGenerateTimetable = async (req, res) => {
         }
         if (!allocatedInPass) break;
       }
+
     };
 
     const runBacktrackingRepair = () => {
@@ -1367,6 +1599,216 @@ export const autoGenerateTimetable = async (req, res) => {
       }
     };
 
+    const relaxed = { theory: 0, lab: 0 };
+    const critical = { theory: 0 };
+    const allLabBlocks = [];
+    for (let p = 1; p <= 7; p++) allLabBlocks.push([p, p + 1]);
+
+    const runRelaxedLabAllocation = () => {
+      let progress = true;
+      let safety = 0;
+      while (progress && safety < 5000) {
+        safety++;
+        progress = false;
+        const labCourseList = courses
+          .filter((c) => pendingLab[c.courseId] > 0)
+          .sort((a, b) => pendingLab[b.courseId] - pendingLab[a.courseId]);
+
+        for (const course of labCourseList) {
+          let allocatedForCourse = false;
+          while (pendingLab[course.courseId] >= 2) {
+            allocatedForCourse = false;
+            const dayOrder = shuffle(days, rng);
+            const blockOrder = shuffle(allLabBlocks, rng);
+            for (const day of dayOrder) {
+              if (allocatedForCourse) break;
+              for (const [p1, p2] of blockOrder) {
+                metrics.conflictChecks.slotBusy++;
+                if (timetable[day][p1] !== null || timetable[day][p2] !== null) continue;
+                if (integratedCourseMap[course.courseId] && hasTheoryOnDay(course.courseId, day)) continue;
+
+                const courseSections = sectionMap[course.courseId] || [];
+                const batchesNeeded = courseSections.length > 0 ? courseSections.length : 1;
+                const freeLabs = getAvailableLabs(day, [p1, p2], batchesNeeded);
+                if (!freeLabs) continue;
+
+                // Relaxed: allow lab-day spacing relaxation, but keep staff conflict/fatigue hard.
+                const staffIds = getCourseStaffIds(course.courseId);
+                if (!isStaffFree(staffIds, day, p1) || !isStaffFree(staffIds, day, p2)) {
+                  metrics.labBlockRejections.staffBusy++;
+                  continue;
+                }
+                if (isStaffFatigued(staffIds, day, p1) || isStaffFatigued(staffIds, day, p2)) {
+                  metrics.labBlockRejections.staffConsecutive++;
+                  continue;
+                }
+                pushLabAllocation(course, day, p1, p2, freeLabs);
+                relaxed.lab += 2;
+                allocatedForCourse = true;
+                progress = true;
+                break;
+              }
+            }
+            if (!allocatedForCourse) break;
+          }
+        }
+      }
+    };
+
+    const runRelaxedTheoryAllocation = () => {
+      let progress = true;
+      let safety = 0;
+      while (progress && safety < 8000) {
+        safety++;
+        progress = false;
+        const courseOrder = shuffle(courses, rng).sort((a, b) => pendingTheory[b.courseId] - pendingTheory[a.courseId]);
+        for (const course of courseOrder) {
+          while (pendingTheory[course.courseId] > 0) {
+            let placed = false;
+            const dayOrder = shuffle(days, rng);
+            const periodOrder = shuffle(periods, rng);
+            for (const day of dayOrder) {
+              if (placed) break;
+              for (const period of periodOrder) {
+                metrics.conflictChecks.slotBusy++;
+                if (timetable[day][period] !== null) continue;
+
+                // Relaxed: keep staff conflict/fatigue hard, relax daily limits only.
+                const staffIds = getCourseStaffIds(course.courseId);
+                if (hasTheoryOnDay(course.courseId, day)) continue;
+                if (!isStaffFree(staffIds, day, period)) continue;
+                if (isStaffFatigued(staffIds, day, period)) continue;
+                if (integratedCourseMap[course.courseId] && hasLabOnDay(course.courseId, day)) continue;
+                pushTheoryAllocation(course, day, period);
+                relaxed.theory += 1;
+                placed = true;
+                progress = true;
+                break;
+              }
+            }
+            if (!placed) break;
+          }
+        }
+      }
+    };
+
+    // Critical pass: still respect staff fatigue (no consecutive periods), but relax other constraints.
+    const runCriticalTheoryAllocation = () => {
+      let progress = true;
+      let safety = 0;
+      while (progress && safety < 8000) {
+        safety++;
+        progress = false;
+        const courseOrder = shuffle(courses, rng).sort((a, b) => pendingTheory[b.courseId] - pendingTheory[a.courseId]);
+        for (const course of courseOrder) {
+          while (pendingTheory[course.courseId] > 0) {
+            let placed = false;
+            const dayOrder = shuffle(days, rng);
+            const periodOrder = shuffle(periods, rng);
+            const staffIds = getCourseStaffIds(course.courseId);
+            for (const day of dayOrder) {
+              if (placed) break;
+              for (const period of periodOrder) {
+                metrics.conflictChecks.slotBusy++;
+                if (timetable[day][period] !== null) continue;
+                if (hasTheoryOnDay(course.courseId, day)) continue;
+                if (!isStaffFree(staffIds, day, period)) continue;
+                if (isStaffFatigued(staffIds, day, period)) continue;
+                // Critical: ignore daily limits, but keep lab-day separation and staff fatigue hard.
+                if (integratedCourseMap[course.courseId] && hasLabOnDay(course.courseId, day)) continue;
+                pushTheoryAllocation(course, day, period);
+                critical.theory += 1;
+                placed = true;
+                progress = true;
+                break;
+              }
+            }
+            if (!placed) break;
+          }
+        }
+      }
+    };
+
+    // Ultra-relaxed pass: allow consecutive periods and ignore other-semester staff conflicts.
+    // Still prevents same-slot conflicts within this semester's grid.
+    const runUltraRelaxedLabAllocation = () => {
+      let progress = true;
+      let safety = 0;
+      while (progress && safety < 8000) {
+        safety++;
+        progress = false;
+        const labCourseList = courses
+          .filter((c) => pendingLab[c.courseId] > 0)
+          .sort((a, b) => pendingLab[b.courseId] - pendingLab[a.courseId]);
+
+        for (const course of labCourseList) {
+          while (pendingLab[course.courseId] >= 2) {
+            let placed = false;
+            const dayOrder = shuffle(days, rng);
+            const blockOrder = shuffle(allLabBlocks, rng);
+            for (const day of dayOrder) {
+              if (placed) break;
+              for (const [p1, p2] of blockOrder) {
+                metrics.conflictChecks.slotBusy++;
+                if (timetable[day][p1] !== null || timetable[day][p2] !== null) continue;
+                if (integratedCourseMap[course.courseId] && hasTheoryOnDay(course.courseId, day)) continue;
+
+                const courseSections = sectionMap[course.courseId] || [];
+                const batchesNeeded = courseSections.length > 0 ? courseSections.length : 1;
+                const freeLabs = getAvailableLabs(day, [p1, p2], batchesNeeded);
+                if (!freeLabs) continue;
+
+                const staffIds = getCourseStaffIds(course.courseId);
+                if (!isStaffFreeLocal(staffIds, day, p1) || !isStaffFreeLocal(staffIds, day, p2)) continue;
+
+                pushLabAllocation(course, day, p1, p2, freeLabs);
+                metrics.ultraRelaxedLabSlots += 2;
+                placed = true;
+                progress = true;
+                break;
+              }
+            }
+            if (!placed) break;
+          }
+        }
+      }
+    };
+
+    const runUltraRelaxedTheoryAllocation = () => {
+      let progress = true;
+      let safety = 0;
+      while (progress && safety < 12000) {
+        safety++;
+        progress = false;
+        const courseOrder = shuffle(courses, rng).sort((a, b) => pendingTheory[b.courseId] - pendingTheory[a.courseId]);
+        for (const course of courseOrder) {
+          while (pendingTheory[course.courseId] > 0) {
+            let placed = false;
+            const dayOrder = shuffle(days, rng);
+            const periodOrder = shuffle(periods, rng);
+            const staffIds = getCourseStaffIds(course.courseId);
+            for (const day of dayOrder) {
+              if (placed) break;
+              for (const period of periodOrder) {
+                metrics.conflictChecks.slotBusy++;
+                if (timetable[day][period] !== null) continue;
+                if (hasTheoryOnDay(course.courseId, day)) continue;
+                if (!isStaffFreeLocal(staffIds, day, period)) continue;
+                // Ultra-relaxed: ignore fatigue and daily limits, but still keep theory/lab on separate days.
+                if (integratedCourseMap[course.courseId] && hasLabOnDay(course.courseId, day)) continue;
+                pushTheoryAllocation(course, day, period);
+                metrics.ultraRelaxedTheorySlots += 1;
+                placed = true;
+                progress = true;
+                break;
+              }
+            }
+            if (!placed) break;
+          }
+        }
+      }
+    };
+
     const runExactTheorySolver = () => {
       if (mode !== 'exact') return false;
 
@@ -1374,12 +1816,14 @@ export const autoGenerateTimetable = async (req, res) => {
       const candidatesFor = (course, enforceFatigue) => {
         const list = [];
         for (const day of days) {
-          if (dailyCourseCounts[course.courseId][day] > 0) continue;
+          if (dailyCourseCounts[course.courseId][day] >= 2) continue;
+          if (hasTheoryOnDay(course.courseId, day)) continue;
           for (const period of theoryPriorityPeriods) {
             if (timetable[day][period] !== null) continue;
-            if (!isStaffFree(course.staffId, day, period)) continue;
-            if (enforceFatigue && isStaffFatigued(course.staffId, day, period)) continue;
-            if (integratedCourseMap[course.courseId] && labDays[course.courseId].has(day)) continue;
+            const staffIds = getCourseStaffIds(course.courseId);
+            if (!isStaffFree(staffIds, day, period)) continue;
+            if (enforceFatigue && isStaffFatigued(staffIds, day, period)) continue;
+            if (integratedCourseMap[course.courseId] && hasLabOnDay(course.courseId, day)) continue;
             const score = scoreTheoryCandidate(course, day, period, 0, false);
             list.push({ day, period, score });
           }
@@ -1423,6 +1867,11 @@ export const autoGenerateTimetable = async (req, res) => {
     };
 
     runLabAllocation();
+    // If strict lab blocks couldn't fit everything, relax lab placement *before* theory
+    // so labs can claim free consecutive slots before theory fills the grid.
+    if (courses.some((c) => pendingLab[c.courseId] > 0)) {
+      runRelaxedLabAllocation();
+    }
     runP1Allocation();
     metrics.p1UnfilledDays = days.filter((d) => timetable[d][1] === null).length;
 
@@ -1438,15 +1887,56 @@ export const autoGenerateTimetable = async (req, res) => {
       runBacktrackingRepair();
     }
 
+    // Final relaxed pass to ensure all courses are allocated where possible.
+    if (courses.some((c) => pendingLab[c.courseId] > 0 || pendingTheory[c.courseId] > 0)) {
+      runRelaxedLabAllocation();
+      runRelaxedTheoryAllocation();
+    }
+
+    // Critical pass: only if theory still unallocated after relaxed pass.
+    if (courses.some((c) => pendingTheory[c.courseId] > 0)) {
+      runCriticalTheoryAllocation();
+    }
+
+    // Ultra-relaxed pass: only if anything still unallocated.
+    if (courses.some((c) => pendingLab[c.courseId] > 0)) {
+      runUltraRelaxedLabAllocation();
+    }
+    if (courses.some((c) => pendingTheory[c.courseId] > 0)) {
+      runUltraRelaxedTheoryAllocation();
+    }
+
     const report = [];
     courses.forEach((c) => {
       if (pendingTheory[c.courseId] > 0) report.push(`Warning: ${c.courseCode} missing ${pendingTheory[c.courseId]} theory hours`);
       if (pendingLab[c.courseId] > 0) report.push(`Warning: ${c.courseCode} missing ${pendingLab[c.courseId]} lab hours`);
     });
+    if (relaxed.theory > 0 || relaxed.lab > 0) {
+      report.push(`Relaxed allocation used: ${relaxed.theory} theory slots, ${relaxed.lab} lab slots`);
+    }
 
+    metrics.relaxedPassUsed = relaxed.theory > 0 || relaxed.lab > 0;
+    metrics.relaxedTheorySlots = relaxed.theory;
+    metrics.relaxedLabSlots = relaxed.lab;
+    metrics.criticalTheorySlots = critical.theory;
     metrics.unallocatedTheoryHours = courses.reduce((sum, c) => sum + Math.max(0, pendingTheory[c.courseId]), 0);
     metrics.unallocatedLabHours = courses.reduce((sum, c) => sum + Math.max(0, pendingLab[c.courseId]), 0);
     metrics.utilizationPct = Number(((metrics.filledSlots / metrics.totalSlots) * 100).toFixed(2));
+
+    const hasUnallocated = courses.some(
+      (c) => pendingTheory[c.courseId] > 0 || pendingLab[c.courseId] > 0
+    );
+
+    // If any hours remain unallocated, do not persist a partial timetable.
+    if (hasUnallocated) {
+      await connection.rollback();
+      return res.status(409).json({
+        status: 'failure',
+        message: 'Unable to allocate all courses with current constraints.',
+        report,
+        metrics,
+      });
+    }
 
     if (generatedAllocations.length > 0) {
       const values = generatedAllocations.map((a) => [

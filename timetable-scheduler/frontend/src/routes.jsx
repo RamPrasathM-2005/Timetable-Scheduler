@@ -21,6 +21,7 @@ import Timetable from './pages/admin/Timetable';
 import ManageRegulations from './pages/admin/ManageRegulations';
 import CourseRecommendation from './pages/admin/CourseRecommendation';
 import BatchRegulationAllocation from './pages/admin/BatchRegulationAllocation';
+import StaffTimetable from './pages/admin/StaffTimetable';
 
 // NotFound
 import NotFound from "./pages/NotFound";
@@ -64,6 +65,7 @@ const routes = [
       { path: 'manage-courses', element: <ManageCourses /> },
       { path: 'manage-staff', element: <ManageStaff /> },
       { path: 'timetable', element: <Timetable /> },
+      { path: 'staff-timetable', element: <StaffTimetable /> },
       { path: 'labtimetable', element: <LabTimetable />},
       {path: 'labcreation', element: <LabCreation/>},
       { path: 'course-recommendation', element: <CourseRecommendation /> },

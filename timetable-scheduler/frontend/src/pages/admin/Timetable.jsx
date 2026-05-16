@@ -12,6 +12,9 @@ import {
   Beaker // Icon for Lab
 } from "lucide-react";
 import axios from "axios";
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
+import { MySwal, showErrorToast, showInfoToast, showSuccessToast } from "../../utils/swalConfig";
 
 const API_BASE_URL = "http://localhost:4000";
 const ALLOCATE_URL = `${API_BASE_URL}/api/admin/timetable/allocate`;
@@ -36,6 +39,7 @@ const Timetable = () => {
   const [isGenerating, setIsGenerating] = useState(false);
   const [showCourseModal, setShowCourseModal] = useState(false);
   const [selectedCell, setSelectedCell] = useState(null);
+  const [ignoreGlobalLabBusy, setIgnoreGlobalLabBusy] = useState(false);
 
   // Manual Allocation State
   const [allocationMode, setAllocationMode] = useState(""); 
@@ -44,6 +48,15 @@ const Timetable = () => {
   const [electiveBuckets, setElectiveBuckets] = useState([]);
   const [bucketCourses, setBucketCourses] = useState([]);
   const [error, setError] = useState(null);
+  const [labRooms, setLabRooms] = useState([]);
+  const [labCourseId, setLabCourseId] = useState("");
+  const [labSectionId, setLabSectionId] = useState("");
+  const [labId, setLabId] = useState("");
+  const [labSections, setLabSections] = useState([]);
+  const [loadingLabs, setLoadingLabs] = useState(false);
+  const [loadingSections, setLoadingSections] = useState(false);
+  const [allocateAllSections, setAllocateAllSections] = useState(true);
+  const [labAllocations, setLabAllocations] = useState({});
 
   // --- CONFIGURATION ---
   const days = ["MON", "TUE", "WED", "THU", "FRI"];
@@ -129,6 +142,56 @@ const Timetable = () => {
     }
   }, [selectedSem]);
 
+  useEffect(() => {
+    if (allocationMode !== "lab") return;
+    if (!selectedDept) {
+      setLabRooms([]);
+      setLabId("");
+      return;
+    }
+
+    const fetchLabs = async () => {
+      setLoadingLabs(true);
+      try {
+        const res = await axios.get(`${API_BASE_URL}/api/admin/labs/${selectedDept}`);
+        setLabRooms(res.data || []);
+      } catch (err) {
+        console.error("Failed to load labs", err);
+        setLabRooms([]);
+      } finally {
+        setLoadingLabs(false);
+      }
+    };
+
+    fetchLabs();
+  }, [allocationMode, selectedDept]);
+
+  useEffect(() => {
+    if (allocationMode !== "lab") return;
+    if (!labCourseId) {
+      setLabSections([]);
+      setLabSectionId("");
+      setLabAllocations({});
+      return;
+    }
+
+    const fetchSections = async () => {
+      setLoadingSections(true);
+      try {
+        const res = await axios.get(`${API_BASE_URL}/api/admin/courses/${labCourseId}/sections`);
+        setLabSections(res.data.data || []);
+        setLabAllocations({});
+      } catch (err) {
+        console.error("Failed to load sections", err);
+        setLabSections([]);
+      } finally {
+        setLoadingSections(false);
+      }
+    };
+
+    fetchSections();
+  }, [allocationMode, labCourseId]);
+
   const fetchTimetable = () => {
     axios
       .get(`${API_BASE_URL}/api/admin/timetable/semester/${selectedSem}`)
@@ -178,29 +241,104 @@ const Timetable = () => {
   };
 
   const handleAutoGenerate = async () => {
-    if (!selectedSem) return alert("Please select a semester first.");
-    
-    if (!window.confirm("⚠️ This will OVERWRITE the current timetable for this semester. Existing data will be deleted. Do you want to continue?")) {
+    if (!selectedSem) {
+      showErrorToast("Missing semester", "Please select a semester first.");
       return;
     }
 
+    const confirmResult = await MySwal.fire({
+      icon: "warning",
+      title: "Auto-Generate Timetable?",
+      text: ignoreGlobalLabBusy
+        ? "Existing manual allocations will be preserved. Auto‑gen will only fill empty slots. Note: other semesters' lab usage will be ignored."
+        : "Existing manual allocations will be preserved. Auto‑gen will only fill empty slots.",
+      showCancelButton: true,
+      confirmButtonText: "Generate",
+      cancelButtonText: "Cancel",
+      confirmButtonColor: "#7c3aed",
+      cancelButtonColor: "#64748b",
+    });
+    if (!confirmResult.isConfirmed) return;
+
     setIsGenerating(true);
     try {
-      const res = await axios.post(`${API_BASE_URL}/api/admin/timetable/generate/${selectedSem}`);
+      const res = await axios.post(
+        `${API_BASE_URL}/api/admin/timetable/generate/${selectedSem}`,
+        null,
+        {
+          params: ignoreGlobalLabBusy ? { ignoreGlobalLabBusy: true } : {},
+        }
+      );
       fetchTimetable();
       
       const report = res.data.report || [];
       const successMsg = res.data.message || "Generated Successfully";
+      const labReject = res.data.metrics?.labBlockRejections || null;
+      const labRejectTotal = labReject
+        ? (labReject.slotOccupied || 0) +
+          (labReject.staffBusy || 0) +
+          (labReject.staffConsecutive || 0) +
+          (labReject.noLabs || 0)
+        : 0;
 
       if (report.length === 0 || (report.length === 1 && report[0] === "All constraints satisfied")) {
-        alert(`✅ ${successMsg}\n\nAll constraints were satisfied perfectly!`);
+        showSuccessToast(`${successMsg}. All constraints were satisfied.`);
+        if (labReject && labRejectTotal > 0) {
+          await MySwal.fire({
+            icon: "info",
+            title: "Lab Allocation Debug",
+            html: `<div style="text-align:left;margin:0;">
+                    <div style="margin-bottom:6px;">Lab block rejections:</div>
+                    <ul style="padding-left:18px;margin:0;">
+                      <li>Slot occupied: ${labReject.slotOccupied || 0}</li>
+                      <li>Staff busy: ${labReject.staffBusy || 0}</li>
+                      <li>Staff consecutive: ${labReject.staffConsecutive || 0}</li>
+                      <li>No labs available: ${labReject.noLabs || 0}</li>
+                    </ul>
+                    <div style="margin-top:10px;font-size:12px;color:#6b7280;">
+                      <div><b>Slot occupied</b>: the semester already has something in that period.</div>
+                      <div><b>Staff busy</b>: the staff is already teaching at that same time (any semester).</div>
+                      <div><b>Staff consecutive</b>: the staff would be scheduled in adjacent periods.</div>
+                      <div><b>No labs available</b>: all lab rooms were occupied in that time block.</div>
+                    </div>
+                  </div>`,
+            confirmButtonText: "OK",
+          });
+        }
       } else {
-        alert(`⚠️ ${successMsg} with warnings:\n\n${report.join("\n")}`);
+        await MySwal.fire({
+          icon: "warning",
+          title: successMsg,
+          html: `<div style="text-align:left;margin:0;">
+                  <div style="margin-bottom:6px;">Generated with warnings:</div>
+                  <ul style="padding-left:18px;margin:0;">
+                    ${report.map((r) => `<li>${r}</li>`).join("")}
+                  </ul>
+                  ${
+                    labReject
+                      ? `<div style="margin-top:10px;margin-bottom:6px;">Lab block rejections:</div>
+                         <ul style="padding-left:18px;margin:0;">
+                           <li>Slot occupied: ${labReject.slotOccupied || 0}</li>
+                           <li>Staff busy: ${labReject.staffBusy || 0}</li>
+                           <li>Staff consecutive: ${labReject.staffConsecutive || 0}</li>
+                           <li>No labs available: ${labReject.noLabs || 0}</li>
+                         </ul>`
+                      : ""
+                  }
+                  <div style="margin-top:10px;font-size:12px;color:#6b7280;">
+                    <div><b>Slot occupied</b>: the semester already has something in that period.</div>
+                    <div><b>Staff busy</b>: the staff is already teaching at that same time (any semester).</div>
+                    <div><b>Staff consecutive</b>: the staff would be scheduled in adjacent periods.</div>
+                    <div><b>No labs available</b>: all lab rooms were occupied in that time block.</div>
+                  </div>
+                </div>`,
+          confirmButtonText: "OK",
+        });
       }
 
     } catch (err) {
       console.error(err);
-      alert("❌ Generation Failed: " + (err.response?.data?.message || err.message));
+      showErrorToast("Generation Failed", err.response?.data?.message || err.message);
     } finally {
       setIsGenerating(false);
       setEditMode(false);
@@ -228,15 +366,22 @@ const Timetable = () => {
       await axios.post(ALLOCATE_URL, payload);
       fetchTimetable();
       setShowCourseModal(false);
-      alert("Assignment successful!");
+      showSuccessToast("Assignment successful!");
     } catch (err) {
       console.error(err);
-      alert("Failed: " + (err.response?.data?.message || err.message));
+      if (err.response?.status === 409) {
+        showInfoToast("Slot already allocated", err.response?.data?.message || "This slot is already filled.");
+      } else {
+        showErrorToast("Assignment failed", err.response?.data?.message || err.message);
+      }
     }
   };
 
   const handleAssignBucket = async () => {
-    if (!selectedBucketId) return alert("Please select a bucket");
+    if (!selectedBucketId) {
+      showErrorToast("Missing bucket", "Please select a bucket");
+      return;
+    }
     const backendPeriod = getBackendPeriod(selectedCell.periodId);
 
     try {
@@ -251,10 +396,266 @@ const Timetable = () => {
       await axios.post(ALLOCATE_URL, payload);
       fetchTimetable();
       setShowCourseModal(false);
-      alert("All courses from the bucket assigned successfully!");
+      showSuccessToast("All courses from the bucket assigned successfully!");
     } catch (err) {
       console.error(err);
-      alert("Failed: " + (err.response?.data?.message || err.message));
+      if (err.response?.status === 409) {
+        showInfoToast("Slot already allocated", err.response?.data?.message || "This slot is already filled.");
+      } else {
+        showErrorToast("Assignment failed", err.response?.data?.message || err.message);
+      }
+    }
+  };
+
+  const handleDownloadPdf = () => {
+    try {
+      if (!timetableData || timetableData.length === 0) {
+        showInfoToast("No data", "No timetable data to export.");
+        return;
+      }
+
+      const doc = new jsPDF("landscape", "pt", "A3");
+      const title = "Timetable";
+      const selectedDeptName =
+        departments.find((d) => String(d.departmentId) === String(selectedDept))?.departmentName || "";
+      const selectedBatchName =
+        batches.find((b) => String(b.batchId) === String(selectedBatch))?.batch || "";
+      const selectedSemNumber =
+        semesters.find((s) => String(s.semesterId) === String(selectedSem))?.semesterNumber || "";
+
+    doc.setFontSize(16);
+    doc.text(title, 40, 40);
+    doc.setFontSize(10);
+    doc.text(
+      `Degree: ${selectedDegree || "-"}   Batch: ${selectedBatchName || "-"}   Dept: ${selectedDeptName || "-"}   Semester: ${selectedSemNumber || "-"}`,
+      40,
+      58
+    );
+
+    const daysOrder = ["MON", "TUE", "WED", "THU", "FRI", "SAT"];
+    const periodCols = [1, 2, 3, 4, 5, 6, 7, 8];
+
+    const slotKey = (day, period) => `${day}-${period}`;
+    const grouped = new Map();
+    timetableData.forEach((e) => {
+      if (!e.dayOfWeek || !e.periodNumber) return;
+      const key = slotKey(e.dayOfWeek, e.periodNumber);
+      if (!grouped.has(key)) grouped.set(key, []);
+      grouped.get(key).push(e);
+    });
+
+    const body = daysOrder.map((day) => {
+      const row = [day];
+      periodCols.forEach((period) => {
+        const entries = grouped.get(slotKey(day, period)) || [];
+        if (!entries.length) {
+          row.push("");
+          return;
+        }
+        const courseStaffMap = new Map();
+        entries.forEach((entry) => {
+          const course = entry.courseTitle || entry.courseCode || "";
+          if (!courseStaffMap.has(course)) courseStaffMap.set(course, new Set());
+          const staffRaw = entry.staffNames || "";
+          if (staffRaw && staffRaw !== "Unassigned") {
+            staffRaw.split(" / ").forEach((name) => {
+              const trimmed = name.trim();
+              if (trimmed) courseStaffMap.get(course).add(trimmed);
+            });
+          } else {
+            courseStaffMap.get(course).add("Unassigned");
+          }
+        });
+
+        const lines = Array.from(courseStaffMap.entries()).map(([course, staffSet]) => {
+          const staffList = Array.from(staffSet).filter(Boolean);
+          return staffList.length > 0 ? `${course}\n/ ${staffList.join(" / ")}` : course;
+        });
+        row.push(lines.join("\n\n"));
+      });
+      return row;
+    });
+
+    const formatStaffList = (names) => {
+      const unique = Array.from(new Set(names.filter(Boolean)));
+      return unique.join(", ");
+    };
+
+    const renderTable = (periodSubset, startY) => {
+      const subBody = daysOrder.map((day) => {
+        const row = [day];
+        periodSubset.forEach((period) => {
+          const entries = grouped.get(slotKey(day, period)) || [];
+          if (!entries.length) {
+            row.push("");
+            return;
+          }
+          const courseStaffMap = new Map();
+          entries.forEach((entry) => {
+            const course = entry.courseTitle || entry.courseCode || "";
+            if (!courseStaffMap.has(course)) courseStaffMap.set(course, new Set());
+            const staffRaw = entry.staffNames || "";
+            if (staffRaw && staffRaw !== "Unassigned") {
+              staffRaw.split(" / ").forEach((name) => {
+                const trimmed = name.trim();
+                if (trimmed) courseStaffMap.get(course).add(trimmed);
+              });
+            } else {
+              courseStaffMap.get(course).add("Unassigned");
+            }
+          });
+
+          const lines = Array.from(courseStaffMap.entries()).map(([course, staffSet]) => {
+            const staffList = Array.from(staffSet).filter((n) => n && n !== "Unassigned");
+            const staffText = staffList.length ? formatStaffList(staffList) : "Unassigned";
+            return `${course}\n${staffText}`;
+          });
+          row.push(lines.join("\n\n"));
+        });
+        return row;
+      });
+
+      autoTable(doc, {
+        startY,
+        head: [["Day", ...periodSubset.map((p) => `P${p}`)]],
+        body: subBody,
+        styles: {
+          fontSize: 8,
+          cellPadding: 3,
+          valign: "top",
+          overflow: "linebreak",
+        },
+        theme: "grid",
+        headStyles: { fillColor: [79, 70, 229], textColor: 255, halign: "center", fontStyle: "bold" },
+        alternateRowStyles: { fillColor: [248, 250, 252] },
+        columnStyles: {
+          0: { cellWidth: 60, fontStyle: "bold", textColor: 80, halign: "center" },
+        },
+        didParseCell: (data) => {
+          if (data.section === "body") {
+            data.cell.styles.minCellHeight = 90;
+            if (data.column.index > 0) {
+              data.cell.styles.cellWidth = 120;
+              data.cell.styles.halign = "left";
+              data.cell.text = [];
+            }
+          }
+        },
+        didDrawCell: (data) => {
+          if (data.section !== "body" || data.column.index === 0) return;
+          const raw = data.cell.raw || "";
+          if (!raw) return;
+
+          const parts = String(raw).split("\n");
+          const courseText = parts[0] || "";
+          const staffText = parts.slice(1).join(" ").trim();
+          const maxWidth = data.cell.width - 6;
+
+          let cursorY = data.cell.y + 10;
+          const startX = data.cell.x + 3;
+
+          // Course (bold)
+          doc.setFont("helvetica", "bold");
+          doc.setFontSize(8.5);
+          const courseLines = doc.splitTextToSize(courseText, maxWidth);
+          courseLines.forEach((line) => {
+            doc.text(line, startX, cursorY);
+            cursorY += 9;
+          });
+
+          // Margin between course and staff
+          cursorY += 4;
+
+          // Staff (regular)
+          if (staffText) {
+            doc.setFont("helvetica", "normal");
+            doc.setFontSize(7.5);
+            const staffLines = doc.splitTextToSize(staffText, maxWidth);
+            staffLines.forEach((line) => {
+              doc.text(line, startX, cursorY);
+              cursorY += 8;
+            });
+          }
+        },
+      });
+    };
+
+    renderTable([1, 2, 3, 4, 5, 6, 7, 8], 75);
+
+      doc.save(`timetable_${selectedDegree || "degree"}_${selectedSemNumber || "sem"}.pdf`);
+    } catch (err) {
+      console.error("PDF export failed:", err);
+      showErrorToast("PDF export failed", err?.message || String(err));
+    }
+  };
+
+  const handleLabAllocate = async () => {
+    if (!selectedCell) return;
+    if (!selectedSem || !selectedDept) {
+      showErrorToast("Missing filters", "Please select filters first.");
+      return;
+    }
+    if (!labCourseId) {
+      showErrorToast("Missing course", "Please select course.");
+      return;
+    }
+
+    const backendPeriod = getBackendPeriod(selectedCell.periodId);
+    if (!backendPeriod) {
+      showErrorToast("Invalid period", "Invalid period selected.");
+      return;
+    }
+
+    try {
+      if (allocateAllSections && labSections.length > 0) {
+        const allocations = labSections.map((s) => ({
+          sectionId: s.sectionId,
+          labId: labAllocations[s.sectionId],
+        }));
+
+        const hasMissing = allocations.some((a) => !a.labId);
+        if (hasMissing) {
+          showErrorToast("Missing labs", "Please select lab room for every batch.");
+          return;
+        }
+
+        const payload = {
+          allocations,
+          day: selectedCell.day,
+          period: backendPeriod,
+          semesterId: +selectedSem,
+          courseId: +labCourseId,
+          deptId: +selectedDept,
+        };
+
+        await axios.post(`${API_BASE_URL}/api/admin/timetable/allocate-multi`, payload);
+      } else {
+        if (!labId) {
+          showErrorToast("Missing lab room", "Please select lab room.");
+          return;
+        }
+        const payload = {
+          semesterId: +selectedSem,
+          deptId: +selectedDept,
+          courseId: +labCourseId,
+          sectionId: labSectionId ? +labSectionId : null,
+          labId: +labId,
+          day: selectedCell.day,
+          period: backendPeriod,
+        };
+
+        await axios.post(`${API_BASE_URL}/api/admin/timetable/allocate-lab`, payload);
+      }
+      fetchTimetable();
+      setShowCourseModal(false);
+      showSuccessToast("Lab allocated successfully!");
+    } catch (err) {
+      console.error(err);
+      if (err.response?.status === 409) {
+        showInfoToast("Slot already allocated", err.response?.data?.message || "This slot is already filled.");
+      } else {
+        showErrorToast("Allocation failed", err.response?.data?.message || err.message);
+      }
     }
   };
 
@@ -275,10 +676,10 @@ const Timetable = () => {
         )
       );
       fetchTimetable();
-      alert("Courses removed successfully!");
+      showSuccessToast("Courses removed successfully!");
     } catch (err) {
       console.error("Delete error:", err);
-      alert("Failed to remove courses");
+      showErrorToast("Remove failed", "Failed to remove courses");
     }
   };
 
@@ -398,7 +799,7 @@ const Timetable = () => {
           </h1>
           
           {selectedSem && (
-            <div className="flex gap-2">
+            <div className="flex flex-col md:flex-row md:items-center gap-2">
               <button
                 onClick={handleAutoGenerate}
                 disabled={isGenerating}
@@ -412,6 +813,17 @@ const Timetable = () => {
                 {isGenerating ? "Generating..." : "Auto-Gen"}
               </button>
 
+              <label className="flex items-center gap-2 text-xs text-gray-600 bg-gray-100 border border-gray-200 rounded-lg px-3 py-2">
+                <input
+                  type="checkbox"
+                  className="accent-indigo-600"
+                  checked={ignoreGlobalLabBusy}
+                  onChange={(e) => setIgnoreGlobalLabBusy(e.target.checked)}
+                  disabled={isGenerating}
+                />
+                Ignore other semesters' lab usage
+              </label>
+
               <button
                 onClick={() => setEditMode(!editMode)}
                 disabled={isGenerating}
@@ -423,6 +835,18 @@ const Timetable = () => {
               >
                 {editMode ? <Save className="w-4 h-4" /> : <Edit className="w-4 h-4" />}
                 {editMode ? "Save" : "Edit"}
+              </button>
+
+              <button
+                onClick={handleDownloadPdf}
+                disabled={isGenerating || timetableData.length === 0}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold shadow-sm transition-all ${
+                  isGenerating || timetableData.length === 0
+                    ? "bg-gray-300 text-gray-600 cursor-not-allowed"
+                    : "bg-emerald-600 hover:bg-emerald-700 text-white"
+                }`}
+              >
+                Download PDF
               </button>
             </div>
           )}
@@ -586,6 +1010,11 @@ const Timetable = () => {
                     setAllocationMode(e.target.value);
                     setCustomCourseInput("");
                     setSelectedBucketId("");
+                    setLabCourseId("");
+                    setLabSectionId("");
+                    setLabId("");
+                    setAllocateAllSections(true);
+                    setLabAllocations({});
                   }}
                   className="w-full p-2.5 bg-white border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-sm"
                 >
@@ -593,6 +1022,7 @@ const Timetable = () => {
                   <option value="select">Regular Course</option>
                   <option value="manual">Manual Entry</option>
                   <option value="bucket">Elective Bucket</option>
+                  <option value="lab">Lab (Physical)</option>
                 </select>
               </div>
 
@@ -644,6 +1074,121 @@ const Timetable = () => {
                   </select>
                 </div>
               )}
+
+              {allocationMode === "lab" && (
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-xs font-bold text-gray-500 mb-1 uppercase">Select Lab Course</label>
+                    <select
+                      value={labCourseId}
+                      onChange={(e) => setLabCourseId(e.target.value)}
+                      className="w-full p-2.5 bg-white border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-sm"
+                    >
+                      <option value="">Choose Course...</option>
+                      {courses.map((c) => (
+                        <option key={c.courseId} value={c.courseId}>
+                          {c.courseCode} - {c.courseTitle}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {labSections.length > 0 && (
+                    <label className="flex items-center gap-2 text-xs font-semibold text-gray-600">
+                      <input
+                        type="checkbox"
+                        checked={allocateAllSections}
+                        onChange={(e) => setAllocateAllSections(e.target.checked)}
+                      />
+                      Allocate for all batches
+                    </label>
+                  )}
+
+                  {!allocateAllSections && (
+                    <div>
+                      <label className="block text-xs font-bold text-gray-500 mb-1 uppercase">Select Batch/Section</label>
+                      <select
+                        value={labSectionId}
+                        onChange={(e) => setLabSectionId(e.target.value)}
+                        className="w-full p-2.5 bg-white border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-sm"
+                        disabled={!labCourseId || loadingSections}
+                      >
+                        <option value="">
+                          {loadingSections ? "Loading sections..." : "Common / No Section"}
+                        </option>
+                        {labSections.map((s) => (
+                          <option key={s.sectionId} value={s.sectionId}>
+                            {s.sectionName}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+
+                  {allocateAllSections && labSections.length > 0 && (
+                    <div className="space-y-2">
+                      <label className="block text-xs font-bold text-gray-500 mb-1 uppercase">Assign Lab Per Batch</label>
+                      {labSections.map((s) => {
+                        const usedLabIds = new Set(
+                          Object.entries(labAllocations)
+                            .filter(([key]) => String(key) !== String(s.sectionId))
+                            .map(([, value]) => String(value))
+                        );
+                        return (
+                          <div key={s.sectionId} className="flex gap-2 items-center">
+                            <div className="text-xs font-semibold text-gray-600 w-28 truncate">{s.sectionName}</div>
+                            <select
+                              value={labAllocations[s.sectionId] || ""}
+                              onChange={(e) =>
+                                setLabAllocations((prev) => ({
+                                  ...prev,
+                                  [s.sectionId]: e.target.value,
+                                }))
+                              }
+                              className="flex-1 p-2.5 bg-white border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-sm"
+                              disabled={!selectedDept || loadingLabs}
+                            >
+                              <option value="">
+                                {loadingLabs ? "Loading labs..." : "Choose Lab..."}
+                              </option>
+                              {labRooms.map((l) => (
+                                <option
+                                  key={l.labId}
+                                  value={l.labId}
+                                  disabled={usedLabIds.has(String(l.labId))}
+                                >
+                                  {l.labName}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {!allocateAllSections && (
+                    <div>
+                      <label className="block text-xs font-bold text-gray-500 mb-1 uppercase">Select Lab Room</label>
+                      <select
+                        value={labId}
+                        onChange={(e) => setLabId(e.target.value)}
+                        className="w-full p-2.5 bg-white border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-sm"
+                        disabled={!selectedDept || loadingLabs}
+                      >
+                        <option value="">
+                          {loadingLabs ? "Loading labs..." : "Choose Lab..."}
+                        </option>
+                        {labRooms.map((l) => (
+                          <option key={l.labId} value={l.labId}>
+                            {l.labName}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             <div className="mt-8">
@@ -664,6 +1209,15 @@ const Timetable = () => {
                   Assign Bucket
                 </button>
               )}
+
+              {allocationMode === "lab" && labCourseId && (
+                <button
+                  onClick={handleLabAllocate}
+                  className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg shadow-lg shadow-emerald-200 transition-all"
+                >
+                  Allocate Lab
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -673,3 +1227,4 @@ const Timetable = () => {
 };
 
 export default Timetable;
+
